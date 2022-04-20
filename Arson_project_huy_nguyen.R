@@ -32,30 +32,50 @@ df_list <- map(file_list, read_excel, sheet = 'Results')
 # Combine all data
 all_data <- bind_rows(df_list)
 
-# Filtering out column bleed and solvent --------------------------------------
-filter_list <- c("Carbon disulfide",
-                 "Benzene",
-                 "Cyclotrisiloxane",
-                 "Toluene",
-                 "Ethylbenzene",
-                 "Xylene")
 
-for (ele in filter_list) {
-  all_data <- all_data %>%
-    filter(!grepl(ele, Compound))
+# Filtering out column bleed and solvent --------------------------------------
+filtering <- function (data, filter_list) {
+  clean_data <- copy(data)
+  for (ele in filter_list) {
+    clean_data <- clean_data %>%
+      filter(!grepl(ele, Compound))
+  }
+  return(clean_data)
 }
 
-# Number of unique compounds after filering
+all_data_clean <- filtering(all_data, c("Carbon disulfide",
+                                        "Benzene",
+                                        "Cyclotrisiloxane",
+                                        "Toluene",
+                                        "Ethylbenzene",
+                                        "Xylene")) 
+
+
+# Filter peak area based on percentile  ---------------------------------------------------------------------------
+# check percentile distribution
+summary(all_data_clean$Area)
+summary(all_data_clean$Height)
+
+# filter iteration --> min. cut = mean(min., 25th percentile), max. cut = mean(max., 75th percentile)
+# while (nrow(filter_quantile) > 4000) {
+#   filter_quantile <- subset(all_data_clean, (Area > 534805 & Area < 1051960) &
+#                               (Height > 8280 & Height < 78963))
+# }
+filter_quantile <- subset(all_data_clean, (Area > 534805 & Area < 1051960) &
+                                          (Height > 8280 & Height < 78963))
+
+summary(filter_quantile$Area)
+hist(filter_quantile$Area)
+summary(filter_quantile$Height)
+hist(filter_quantile$Height)
+
+# Number of unique compounds after filtering
 length(unique(all_data$Compound)) # 9505
 
 # Checkpoint for dimethylbenzene
 str_which(all_data$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
 
-# Distribution of Peak Area and Peak Height values
-hist(all_data$Area, xlim = c(0, 24945800)) # 95% of peak area is 0 - 2E+07
-hist(all_data$Height, xlim = c(0, 389655)) # 95% of peak height is 0 - 2E+05
-
-# Scaling Peak Area and Peak Height
+# Scaling Peak Area and Peak Height ?????
 all_data$Area <- scale(all_data$Area)
 all_data$Height <- scale(all_data$Height)
 
