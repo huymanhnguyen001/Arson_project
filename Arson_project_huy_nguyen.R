@@ -14,6 +14,7 @@ library(FactoMineR)
 library(data.table)
 library(corrplot)
 
+set.seed(12345)
 # Analysis Progress -------------------------------------------------------
 # fail to appropriately pivot_wider: each column should be name of compound and each row will be
 # the measurement of that compount, such as MF, RMF, RT1, RT2, Area %, Height, Ion 1, Ion 2, etc.
@@ -25,15 +26,8 @@ library(corrplot)
 # Anything with a D at end is diesel and the composites are obviously a mixture of a fuel. 
 
 
-# Data import --------------------------------------------
-file_list <- list.files(pattern = '*.xlsx')
-df_list <- map(file_list, read_excel, sheet = 'Results')
+# Functions -------------------------------------------------------------------------------------------------------
 
-# Combine all data
-all_data <- bind_rows(df_list)
-
-
-# Filtering out column bleed and solvent --------------------------------------
 filtering <- function (data, filter_list) { #, percentile, column_list
   clean_data <- copy(data)
   for (ele in filter_list) {
@@ -43,7 +37,24 @@ filtering <- function (data, filter_list) { #, percentile, column_list
   return(clean_data)
 }
 
-all_data_clean <- filtering(all_data, c("Carbon disulfide",
+# Data import --------------------------------------------
+file_list <- list.files(pattern = '*.xlsx')
+df_list <- map(file_list, read_excel, sheet = 'Results')
+
+# Labeling duplicate compound names with numeric suffix and with sample name 
+for (i in 1:length(df_list)) {
+  df_list[[i]] <- df_list[[i]] %>% 
+    group_by(Compound) %>%
+    mutate(Compound = make.names(Compound, unique = TRUE, allow_ = FALSE)) %>%
+    mutate(Compound = paste(Compound, "-", file_list[[i]]))
+}
+
+# Combine all data
+all_data <- bind_rows(df_list)
+
+# Filtering out column bleed and solvent --------------------------------------
+
+all_data_clean <- filtering(all_data, c("Carbon.disulfide",
                                         "Benzene",
                                         "Cyclotrisiloxane",
                                         "Toluene",
@@ -93,10 +104,6 @@ length(unique(filter_quantile$Compound))
 # Checkpoint for dimethylbenzene
 str_which(all_data_clean$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
 
-# Scaling Peak Area and Peak Height ?????
-all_data$Area <- scale(all_data$Area)
-all_data$Height <- scale(all_data$Height)
-
 # Shapiro-Wilk Normality Test ---------------------------------------------
 # Peak Area
 
@@ -105,27 +112,10 @@ all_data$Height <- scale(all_data$Height)
 
 # Data Normalization -----------------------------------------------------
 
-
-# summarize similar compound detection by the mean value  
-for (i in 1:length(df_list)) {
-  df_list[[i]] <- df_list[[i]] %>% 
-    group_by(Compound) %>% 
-    summarise(across(everything(), mean))#  %>%
-    # mutate(sample_name = file_list[[i]]) %>%
-    # relocate(sample_name) %>%
-    # mutate(Compound_and_sample = paste(Compound, "-", sample_name)) %>%
-    # relocate(Compound_and_sample)
-}
-
-
-# Convert list of excel file (tibble) into a single data (tibble) ---------
-all_data <- rbindlist(df_list)
-
-
-# Pivot wider for PCA -----------------------------------------------------
-df_list[[1]] %>% 
-  pivot_longer(-c(Compound_and_sample, sample_name, Compound)) %>%
-  pivot_wider(names_from = Compound, values_from = value)
+# # Pivot wider for PCA (may be unimportant) -----------------------------------------------------
+# df_list[[1]] %>% 
+#   pivot_longer(-c(Compound_and_sample, sample_name, Compound)) %>%
+#   pivot_wider(names_from = Compound, values_from = value)
 
 # i <- 1
 # df_list_wider <- list()
@@ -135,19 +125,27 @@ df_list[[1]] %>%
 # i <- i + 1
 
 
-# PCA ---------------------------------------------------------------------
-file1 <- copy(df_list[[1]])
-file1 <- file1 %>%
-  column_to_rownames(., var = "Compound")
-file1_pca <- PCA(file1, scale.unit = TRUE, ncp = 5, graph = FALSE)
+# PCA --------------------------------------------------------------------
 
-fviz_eig(file1_pca,
+# Change Compound column to row names
+filter_quantile <- filter_quantile %>%
+  column_to_rownames(., var = "Compound")
+
+filter_quantile_pca <- PCA(filter_quantile[c(3:6)], scale.unit = TRUE, ncp = 5, graph = FALSE)
+
+fviz_eig(filter_quantile_pca,
          addlabels = TRUE) 
 
-var <- get_pca_var(file1_pca)
-corrplot(var$cos2, is.corr=FALSE)
-fviz_cos2(file1_pca, choice = "var", axes = 1:2)
+var <- get_pca_var(filter_quantile_pca)
+corrplot(var$cos2, is.corr = FALSE)
+fviz_cos2(filter_quantile_pca, choice = "var", axes = 1:2)
 
-ind <- get_pca_ind(file1_pca)
-fviz_cos2(file1_pca, choice = "ind")
-fviz_contrib(file1_pca, choice = "ind", axes = 1:2)
+ind <- get_pca_ind(filter_quantile_pca)
+fviz_cos2(filter_quantile_pca, choice = "ind")
+
+# Top 20 compounds with highest contribution
+fviz_contrib(filter_quantile_pca, choice = "ind", axes = 1:2, top = 20) +
+  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
+
+# Investigate the significant compounds
+
