@@ -34,7 +34,7 @@ all_data <- bind_rows(df_list)
 
 
 # Filtering out column bleed and solvent --------------------------------------
-filtering <- function (data, filter_list) {
+filtering <- function (data, filter_list) { #, percentile, column_list
   clean_data <- copy(data)
   for (ele in filter_list) {
     clean_data <- clean_data %>%
@@ -53,27 +53,45 @@ all_data_clean <- filtering(all_data, c("Carbon disulfide",
 
 # Filter peak area based on percentile  ---------------------------------------------------------------------------
 # check percentile distribution
-summary(all_data_clean$Area)
-summary(all_data_clean$Height)
+quantile(all_data_clean$Area) #summary()
+quantile(all_data_clean$Height) #summary()
 
 # filter iteration --> min. cut = mean(min., 25th percentile), max. cut = mean(max., 75th percentile)
-# while (nrow(filter_quantile) > 4000) {
-#   filter_quantile <- subset(all_data_clean, (Area > 534805 & Area < 1051960) &
-#                               (Height > 8280 & Height < 78963))
+# while (nrow(all_data_clean) > 4000) {
+#   filter_quantile <- subset(all_data_clean, (Area > mean(quantile(all_data_clean$Area)[1],
+#                                                          quantile(all_data_clean$Area)[2])
+#                                              & Area < mean(quantile(all_data_clean$Area)[4],
+#                                                            quantile(all_data_clean$Area)[5])) &
+#                               (Height > mean(quantile(all_data_clean$Height)[1],
+#                                              quantile(all_data_clean$Height)[2])
+#                                & Height < mean(quantile(all_data_clean$Height)[4],
+#                                                quantile(all_data_clean$Height)[5])))
+#   new_area_quantile <- quantile(filter_quantile$Area)
+#   new_height_quantile <- quantile(filter_quantile$Height)
+#   new_filter_quantile <- subset(all_data_clean, (Area > mean(quantile(all_data_clean$Area)[1],
+#                                                          quantile(all_data_clean$Area)[2])
+#                                              & Area < mean(quantile(all_data_clean$Area)[4],
+#                                                            quantile(all_data_clean$Area)[5])) &
+#                               (Height > mean(quantile(all_data_clean$Height)[1],
+#                                              quantile(all_data_clean$Height)[2])
+#                                & Height < mean(quantile(all_data_clean$Height)[4],
+#                                                quantile(all_data_clean$Height)[5])))
 # }
-filter_quantile <- subset(all_data_clean, (Area > 534805 & Area < 1051960) &
-                                          (Height > 8280 & Height < 78963))
 
-summary(filter_quantile$Area)
+filter_quantile <- subset(all_data_clean, (Area > 530000 & Area < 1050000) &
+                                          (Height > 10000 & Height < 78000))
+
+quantile(filter_quantile$Area)
+quantile(filter_quantile$Height)
 hist(filter_quantile$Area)
-summary(filter_quantile$Height)
 hist(filter_quantile$Height)
 
 # Number of unique compounds after filtering
-length(unique(all_data$Compound)) # 9505
+length(unique(all_data_clean$Compound))
+length(unique(filter_quantile$Compound)) 
 
 # Checkpoint for dimethylbenzene
-str_which(all_data$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
+str_which(all_data_clean$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
 
 # Scaling Peak Area and Peak Height ?????
 all_data$Area <- scale(all_data$Area)
