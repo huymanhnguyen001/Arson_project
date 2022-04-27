@@ -27,7 +27,7 @@ set.seed(12345)
 
 
 # Functions -------------------------------------------------------------------------------------------------------
-
+# Filtering matched compound names
 filtering <- function (data, filter_list) { #, percentile, column_list
   clean_data <- copy(data)
   for (ele in filter_list) {
@@ -52,15 +52,21 @@ for (i in 1:length(df_list)) {
 # Combine all data
 all_data <- bind_rows(df_list)
 
+# Checkpoint for dimethylbenzene
+str_which(all_data$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
+
+
 # Filtering out column bleed and solvent --------------------------------------
+# \< & \>: "\<" is an escape sequence for the beginning of a word, and ">" is used for end
+# "\b" is an anchor to identify word before/after pattern
 
 all_data_clean <- filtering(all_data, c("Carbon.disulfide",
-                                        "Benzene",
-                                        "Cyclotrisiloxane",
+                                        "Benzene - ", 
+                                        "Cyclotrisiloxane..hexamethyl",
+                                        "Cyclotetrasiloxane..octamethyl",
                                         "Toluene",
                                         "Ethylbenzene",
                                         "Xylene")) 
-
 
 # Filter peak area based on percentile  ---------------------------------------------------------------------------
 # check percentile distribution
@@ -101,8 +107,6 @@ hist(filter_quantile$Height)
 length(unique(all_data_clean$Compound))
 length(unique(filter_quantile$Compound)) 
 
-# Checkpoint for dimethylbenzene
-str_which(all_data_clean$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
 
 # Shapiro-Wilk Normality Test ---------------------------------------------
 # Peak Area
