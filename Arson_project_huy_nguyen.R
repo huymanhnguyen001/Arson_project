@@ -42,31 +42,44 @@ file_list <- list.files(pattern = '*.xlsx')
 df_list <- map(file_list, read_excel, sheet = 'Results')
 
 # Labeling duplicate compound names with numeric suffix and with sample name 
-for (i in 1:length(df_list)) {
-  df_list[[i]] <- df_list[[i]] %>% 
-    group_by(Compound) %>%
-    mutate(Compound = make.names(Compound, unique = TRUE, allow_ = FALSE)) %>%
-    mutate(Compound = paste(Compound, "-", file_list[[i]]))
-}
+# for (i in 1:length(df_list)) {
+#   df_list[[i]] <- df_list[[i]] %>% 
+#     group_by(Compound) %>%
+#     mutate(Compound = make.names(Compound, unique = TRUE, allow_ = FALSE)) %>%
+#     mutate(Compound = paste(Compound, "-", file_list[[i]]))
+# }
 
 # Combine all data
-all_data <- bind_rows(df_list)
+# all_data <- bind_rows(df_list)
 
 # Checkpoint for dimethylbenzene
-str_which(all_data$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
+# str_which(all_data$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
 
 
 # Filtering out column bleed and solvent --------------------------------------
 # \< & \>: "\<" is an escape sequence for the beginning of a word, and ">" is used for end
 # "\b" is an anchor to identify word before/after pattern
 
-all_data_clean <- filtering(all_data, c("Carbon.disulfide",
+df_list_clean <- map(df_list, filtering, filter_list = c("Carbon.disulfide",
                                         "Benzene - ", 
                                         "Cyclotrisiloxane..hexamethyl",
                                         "Cyclotetrasiloxane..octamethyl",
                                         "Toluene",
                                         "Ethylbenzene",
                                         "Xylene")) 
+
+df_list_clean_1 <- df_list_clean[[1]]
+
+df_list_clean_1 <- df_list_clean_1 %>%
+  select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3")))
+# Calculate percentage Peak Area and Peak Height
+df_list_clean_1$Percent_Area <- df_list_clean_1$Area/sum(df_list_clean_1$Area)
+df_list_clean_1$Percent_Height <- df_list_clean_1$Height/sum(df_list_clean_1$Height)
+
+# Plotting the Percentage area/height vs. compound
+df_list_clean_1 <- df_list_clean_1 %>%
+  arrange(Percent_Height, Percent_Area)
+
 
 # Filter peak area based on percentile  ---------------------------------------------------------------------------
 # check percentile distribution
