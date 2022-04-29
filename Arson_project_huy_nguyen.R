@@ -68,17 +68,39 @@ df_list_clean <- map(df_list, filtering, filter_list = c("Carbon.disulfide",
                                         "Ethylbenzene",
                                         "Xylene")) 
 
-df_list_clean_1 <- df_list_clean[[1]]
+# all_data_clean <- bind_rows(df_list_clean)
 
-df_list_clean_1 <- df_list_clean_1 %>%
-  select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3")))
-# Calculate percentage Peak Area and Peak Height
-df_list_clean_1$Percent_Area <- df_list_clean_1$Area/sum(df_list_clean_1$Area)
-df_list_clean_1$Percent_Height <- df_list_clean_1$Height/sum(df_list_clean_1$Height)
+# Iterative loop subsetting data based on cumulative sum of Percent_Height
 
-# Plotting the Percentage area/height vs. compound
-df_list_clean_1 <- df_list_clean_1 %>%
-  arrange(Percent_Height, Percent_Area)
+test_df_list <- list()
+
+for (i in 1:length(df_list_clean)) {
+  subset <- df_list_clean[[i]]
+  # Optional !! Remove unnecessary columns in data
+  subset_clean <- subset %>%
+    select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3")))
+
+  # Calculate percentage Peak Area and Peak Height
+  subset_clean$Percent_Area <- subset_clean$Area/sum(subset_clean$Area)
+  subset_clean$Percent_Height <- subset_clean$Height/sum(subset_clean$Height)
+
+  # Data frame for sorting percent_area & percent_height from highest to lowest
+  subset_clean <- subset_clean %>%
+    arrange(desc(Percent_Height), desc(Percent_Area))
+
+  # subset data based on the largest number of iteration
+  for (row_num in 1:nrow(subset_clean)) {
+    # slice data based on condition of cumulative sum of percent_height, limit = 80%
+    if (sum(subset_clean[1:row_num,]$Percent_Height) > 0.8) {
+      new_subset_clean <- slice_head(subset_clean, n = row_num)
+      break
+    }
+  }
+  # Assign the 
+  test_df_list[[i]] <- new_subset_clean
+}
+
+
 
 
 # Filter peak area based on percentile  ---------------------------------------------------------------------------
