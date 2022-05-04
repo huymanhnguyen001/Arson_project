@@ -13,6 +13,8 @@ library(factoextra)
 library(FactoMineR)
 library(data.table)
 library(corrplot)
+library(purrr)
+library(stringr)
 
 set.seed(12345)
 # Analysis Progress -------------------------------------------------------
@@ -72,10 +74,11 @@ df_list_clean <- map(df_list, filtering, filter_list = c("Carbon.disulfide",
 
 # Iterative loop subsetting data based on cumulative sum of Percent_Height
 
-test_df_list <- list()
+subset_df_list <- list()
 
 for (i in 1:length(df_list_clean)) {
   subset <- df_list_clean[[i]]
+  
   # Optional !! Remove unnecessary columns in data
   subset_clean <- subset %>%
     select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3")))
@@ -97,11 +100,40 @@ for (i in 1:length(df_list_clean)) {
     }
   }
   # Assign the 
-  test_df_list[[i]] <- new_subset_clean
+  subset_df_list[[i]] <- new_subset_clean
 }
 
+# Add sample_name column to each subset_df
 
+for (i in 1:length(subset_df_list)) {
+  subset_df_list[[i]] <- subset_df_list[[i]] %>%
+    group_by(Compound) %>% 
+    mutate(sample_name = file_list[[i]])
+}
 
+# Combine all subset_df together
+
+all_subset_clean <- bind_rows(subset_df_list)
+
+# filtering similar compound across all 39 files in subset_df_list
+all_subset_clean_similar <- data.frame(matrix(ncol = 10, nrow = 0))
+colnames(all_subset_clean_similar) <- colnames(all_subset_clean)
+all_subset_clean_similar$Compound <- as.character(all_subset_clean_similar$Compound)
+all_subset_clean_similar$sample_name <- as.character(all_subset_clean_similar$sample_name)
+
+for (compound in unique(all_subset_clean$Compound)) {
+
+  # extract row index at the match and examine sample_name at that row index
+  slice_df <- all_subset_clean[str_detect(all_subset_clean$Compound, coll(compound)),]
+  
+  # if compound was found in another sample, then append it to new dataframe: all_subset_clean_similar
+  if (length(unique(slice_df$sample_name)) == 39) {
+    all_subset_clean_similar <- bind_rows(all_subset_clean_similar, slice_df, .id = NULL)
+  }
+}
+
+# Check number of unique compound 
+length(unique(all_subset_clean_similar$Compound))
 
 # Filter peak area based on percentile  ---------------------------------------------------------------------------
 # check percentile distribution
