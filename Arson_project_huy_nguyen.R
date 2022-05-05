@@ -15,6 +15,7 @@ library(data.table)
 library(corrplot)
 library(purrr)
 library(stringr)
+library(stringi)
 
 set.seed(12345)
 # Analysis Progress -------------------------------------------------------
@@ -38,29 +39,21 @@ filtering <- function (data, filter_list) { #, percentile, column_list
   }
   return(clean_data)
 }
+ # Notin function
+`%notin%` <- Negate(`%in%`)
 
 # Data import --------------------------------------------
 file_list <- list.files(pattern = '*.xlsx')
 df_list <- map(file_list, read_excel, sheet = 'Results')
 
-# Labeling duplicate compound names with numeric suffix and with sample name 
-# for (i in 1:length(df_list)) {
-#   df_list[[i]] <- df_list[[i]] %>% 
-#     group_by(Compound) %>%
-#     mutate(Compound = make.names(Compound, unique = TRUE, allow_ = FALSE)) %>%
-#     mutate(Compound = paste(Compound, "-", file_list[[i]]))
-# }
-
 # Combine all data
-# all_data <- bind_rows(df_list)
+all_data <- bind_rows(df_list)
 
 # Checkpoint for dimethylbenzene
 # str_which(all_data$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
 
 
 # Filtering out column bleed and solvent --------------------------------------
-# \< & \>: "\<" is an escape sequence for the beginning of a word, and ">" is used for end
-# "\b" is an anchor to identify word before/after pattern
 
 df_list_clean <- map(df_list, filtering, filter_list = c("Carbon.disulfide",
                                         "Benzene - ", 
@@ -70,7 +63,7 @@ df_list_clean <- map(df_list, filtering, filter_list = c("Carbon.disulfide",
                                         "Ethylbenzene",
                                         "Xylene")) 
 
-# all_data_clean <- bind_rows(df_list_clean)
+all_data_clean <- bind_rows(df_list_clean)
 
 # Iterative loop subsetting data based on cumulative sum of Percent_Height
 
@@ -99,7 +92,7 @@ for (i in 1:length(df_list_clean)) {
       break
     }
   }
-  # Assign the 
+  # Assign new slice df to subset_df_list 
   subset_df_list[[i]] <- new_subset_clean
 }
 
@@ -115,85 +108,44 @@ for (i in 1:length(subset_df_list)) {
 
 all_subset_clean <- bind_rows(subset_df_list)
 
-# filtering similar compound across all 39 files in subset_df_list
+# filtering similar compound across all 39 samples in subset_df_list
 all_subset_clean_similar <- data.frame(matrix(ncol = 10, nrow = 0))
 colnames(all_subset_clean_similar) <- colnames(all_subset_clean)
 all_subset_clean_similar$Compound <- as.character(all_subset_clean_similar$Compound)
 all_subset_clean_similar$sample_name <- as.character(all_subset_clean_similar$sample_name)
 
 for (compound in unique(all_subset_clean$Compound)) {
-
+  # ignore long compound names ????
+  if (nchar(compound) > 48) {
+    next
+  }
+  
+  compound <- paste0("^",compound,"$")
   # extract row index at the match and examine sample_name at that row index
-  slice_df <- all_subset_clean[str_detect(all_subset_clean$Compound, coll(compound)),]
+  slice_df <- all_subset_clean[str_which(all_subset_clean$Compound, compound,] # DEBUG THIS!
+  # Problem with Error in stri_detect_regex:  Syntax error in regex pattern
+  # Problem with Error in stri_detect_regex: In a character range [x-y], x is greater than y. [name is too long]
   
   # if compound was found in another sample, then append it to new dataframe: all_subset_clean_similar
   if (length(unique(slice_df$sample_name)) == 39) {
+    # append the remove slice_df to all_subset_clean_similar
     all_subset_clean_similar <- bind_rows(all_subset_clean_similar, slice_df, .id = NULL)
+    print(dim(all_subset_clean_similar))
   }
 }
+ 
+
 
 # Check number of unique compound 
 length(unique(all_subset_clean_similar$Compound))
 
-# Filter peak area based on percentile  ---------------------------------------------------------------------------
-# check percentile distribution
-quantile(all_data_clean$Area) #summary()
-quantile(all_data_clean$Height) #summary()
+# examine the cumulative peak height and peak area per sample of compounds found across 39 samples
+all_subset_clean_similar %>%
+  group_by(sample_name) %>%
+  summarise(cumulative_area = sum(Percent_Area)) 
+# Error!!! cumulative_area value of ecah sample here should be less than sum percent_area 
+# of each sample in subset_df_list
 
-# filter iteration --> min. cut = mean(min., 25th percentile), max. cut = mean(max., 75th percentile)
-# while (nrow(all_data_clean) > 4000) {
-#   filter_quantile <- subset(all_data_clean, (Area > mean(quantile(all_data_clean$Area)[1],
-#                                                          quantile(all_data_clean$Area)[2])
-#                                              & Area < mean(quantile(all_data_clean$Area)[4],
-#                                                            quantile(all_data_clean$Area)[5])) &
-#                               (Height > mean(quantile(all_data_clean$Height)[1],
-#                                              quantile(all_data_clean$Height)[2])
-#                                & Height < mean(quantile(all_data_clean$Height)[4],
-#                                                quantile(all_data_clean$Height)[5])))
-#   new_area_quantile <- quantile(filter_quantile$Area)
-#   new_height_quantile <- quantile(filter_quantile$Height)
-#   new_filter_quantile <- subset(all_data_clean, (Area > mean(quantile(all_data_clean$Area)[1],
-#                                                          quantile(all_data_clean$Area)[2])
-#                                              & Area < mean(quantile(all_data_clean$Area)[4],
-#                                                            quantile(all_data_clean$Area)[5])) &
-#                               (Height > mean(quantile(all_data_clean$Height)[1],
-#                                              quantile(all_data_clean$Height)[2])
-#                                & Height < mean(quantile(all_data_clean$Height)[4],
-#                                                quantile(all_data_clean$Height)[5])))
-# }
-
-filter_quantile <- subset(all_data_clean, (Area > 530000 & Area < 1050000) &
-                                          (Height > 10000 & Height < 78000))
-
-quantile(filter_quantile$Area)
-quantile(filter_quantile$Height)
-hist(filter_quantile$Area)
-hist(filter_quantile$Height)
-
-# Number of unique compounds after filtering
-length(unique(all_data_clean$Compound))
-length(unique(filter_quantile$Compound)) 
-
-
-# Shapiro-Wilk Normality Test ---------------------------------------------
-# Peak Area
-
-# Peak Height
-
-
-# Data Normalization -----------------------------------------------------
-
-# # Pivot wider for PCA (may be unimportant) -----------------------------------------------------
-# df_list[[1]] %>% 
-#   pivot_longer(-c(Compound_and_sample, sample_name, Compound)) %>%
-#   pivot_wider(names_from = Compound, values_from = value)
-
-# i <- 1
-# df_list_wider <- list()
-# df_wider$sample_name <- file_list[[i]]
-# df_wider <- relocate(df_wider, sample_name)
-# df_list_wider[[i]] <- df_wider
-# i <- i + 1
 
 
 # PCA --------------------------------------------------------------------
