@@ -46,14 +46,14 @@ filtering <- function (data, filter_list) { #, percentile, column_list
 file_list <- list.files(pattern = '*.xlsx')
 
 # Pipe operator for list
-gasoline_file_list <- file_list %>% 
+indi_IL_file_list <- file_list %>% 
   .[!str_ends(., "D.xlsx")] %>%
   .[!str_detect(., "DieselComp")] %>%
-  .[!str_detect(., "GasComp")] #%>%
-  # .[!str_ends(., "check.xlsx")]
+  .[!str_detect(., "GasComp")] %>%
+  .[!str_ends(., "check.xlsx")]
 
-# gasoline_df_list <- map(gasoline_file_list, read_excel, sheet = 'Results') 
-df_list <- map(file_list, read_excel, sheet = 'Results')
+df_list <- map(indi_IL_file_list, read_excel, sheet = 'Results')
+# df_list <- map(file_list, read_excel, sheet = 'Results')
 # Combine all data
 # all_data <- bind_rows(df_list)
 
@@ -77,7 +77,7 @@ df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$", #
 # Iterative loop sub-setting data based on cumulative sum(Percent_Height): cumulative sum(Percent_Height) < cumulative sum(Percent_Area)
 
 # subset_df_list <- list()
-subset_df_list <- list() # subset_df_list
+slice_df_list <- list() # subset_df_list
 
 for (i in 1:length(df_list_clean)) { # df_list_clean
   subset <- df_list_clean[[i]]
@@ -99,39 +99,37 @@ for (i in 1:length(df_list_clean)) { # df_list_clean
   # subset data based on the largest number of iteration
   for (row_num in 1:nrow(subset_clean)) {
     # slice data based on condition of cumulative sum of percent_height, limit ~ 80%
-    if (sum(subset_clean[1:row_num,]$Percent_Height) > 0.95) {
+    if (sum(subset_clean[1:row_num,]$Percent_Height) > 0.99) {
       new_subset_clean <- slice_head(subset_clean, n = row_num)
       break
     }
   }
   # Assign new slice df to subset_df_list 
-  subset_df_list[[i]] <- new_subset_clean
+  slice_df_list[[i]] <- new_subset_clean
   
   # METHOD 2: BASED ON CUMULATIVE DISTRIBUTION OF AREA UNDER THE CURVE
 }
 
+# Add sample_name column to each subset_df
+
+for (i in 1:length(slice_df_list)) {
+  slice_df_list[[i]] <- slice_df_list[[i]] %>%
+    group_by(Compound) %>% 
+    mutate(sample_name = indi_IL_file_list[[i]]) # file_list
+}
 
 # Export gasoline subset to csv file ------------------------------------------------------------------------------
 
-# for (i in 1:length(gasoline_subset_df_list)) {
-#   write.csv(gasoline_subset_df_list[[i]], file = paste0("C:/Users/huyng/Desktop/", 
-#                                                         gasoline_file_list[[i]], ".csv"))
+# for (i in 1:length(subset_df_list)) {
+#   write.csv(subset_df_list[[i]], file = paste0("C:/Users/huyng/Desktop/",
+#                                                         diesel_file_list[[i]], ".csv"))
 # }
-
-
-# Add sample_name column to each subset_df
-
-for (i in 1:length(subset_df_list)) {
-  subset_df_list[[i]] <- subset_df_list[[i]] %>%
-    group_by(Compound) %>% 
-    mutate(sample_name = file_list[[i]]) #gasoline_file_list
-}
 
 # Combine all subset_df together
 
-all_subset_clean <- bind_rows(subset_df_list) # all_subset_clean, all_gasoline_subset_clean, gasoline_subset_df_list
+all_subset_clean <- bind_rows(slice_df_list) # all_subset_clean, all_gasoline_subset_clean, gasoline_subset_df_list
 
-# Dominant Compounds (high % area & height) found across all 39 samples ------------------------------------------------
+# Dominant Compounds (high % area & height) found across samples ------------------------------------------------
 # Similar compound from IL samples
 all_subset_clean_1st_filter <- data.frame(matrix(ncol = ncol(all_subset_clean), nrow = 0)) #all_gasoline_subset_clean_1st_filter
 colnames(all_subset_clean_1st_filter) <- colnames(all_subset_clean)
@@ -150,19 +148,19 @@ for (compound_name in unique(all_subset_clean$Compound)) { #all_subset_clean
 
   # Filter 1: baseR::grepl 
   slice_df1 <- all_subset_clean[which(grepl(compound_name, all_subset_clean$Compound, fixed = TRUE)),]
-  
+  # slice_df1 <- all_subset_clean[which(grepl(paste0("^", compound_name, "$"), all_subset_clean$Compound)),]
   # !!! --> If try() produces error, then next iteration in for loop
-  if (class(try(str_which(slice_df1$Compound, paste0("^", compound_name, "$")), silent = TRUE)) %in% "try-error") {
+  if (class(try(which(grepl(paste0("^", compound_name, "$"), all_subset_clean$Compound)), silent = TRUE)) %in% "try-error") {
     unique_subset <- bind_rows(unique_subset, slice_df1, .id = NULL)
     next
-  }
+  } # str_which(slice_df1$Compound, paste0("^", compound_name, "$"))
   # Filter 2: stringr::str_which
   else {
-    slice_df2 <- slice_df1[str_which(slice_df1$Compound, paste0("^", compound_name, "$")),]
+    slice_df2 <- slice_df1[which(grepl(paste0("^", compound_name, "$"), slice_df1$Compound)),]
   }
   
   # if compound was found in another sample, then append it to new dataframe: all_subset_clean_similar
-  if (length(unique(slice_df2$sample_name)) > 15) {
+  if (length(unique(slice_df2$sample_name)) > (length(indi_IL_file_list) - 1)) {
     # append the remove slice_df to all_subset_clean_similar
     all_subset_clean_1st_filter <- bind_rows(all_subset_clean_1st_filter, slice_df2, .id = NULL)
   }
@@ -171,13 +169,23 @@ for (compound_name in unique(all_subset_clean$Compound)) { #all_subset_clean
   }
 }
 
-length(unique(all_subset_clean_1st_filter$Compound)) 
+length(unique(all_subset_clean_1st_filter$Compound))
+# When include 99% of cumulative peak height, all diesel samples share 304 compounds in common
+# When include 99% of cumulative peak height, all gasoline samples share 39 compounds in common
+# When include 99% of cumulative peak height, all diesel composite samples share 357 compounds in common
+# When include 99% of cumulative peak height, all gasoline composite samples share 248 compounds in common
+#--------------------------------------------------------------------------------------
+# 28 out of 28 gasoline samples share 25 common compounds
 # more than 15 out of 28 gasoline samples share 96 common compounds
+# 5 out of 5 diesel samples share 50 common compounds
 # more than 15 out of 39 IL samples share 150 common compounds
 unique_subset <- unique_subset %>%
   arrange(desc(sample_name), desc(MF)) #%>%
   #arrange(desc(Percent_Area), desc(Percent_Height))
-length(unique(unique_subset$sample_name))
+
+length(unique(unique_subset$Compound))
+# 963 compounds unique for 5 diesel compounds
+
 # examine the cumulative peak height and peak area per sample of compounds found across 39 samples
 # all_gasoline_subset_clean_1st_filter %>%
 #   group_by(sample_name) %>%
