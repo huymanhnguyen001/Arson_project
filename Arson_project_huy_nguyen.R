@@ -76,6 +76,24 @@ df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$",
 
 # all_data_clean <- bind_rows(df_list_clean)
 
+
+# Label compound type based on chemical structure -----------------------------------------------------------------
+# REGEX REFERENCES:
+# https://regenerativetoday.com/a-complete-beginners-guide-to-regular-expressions-in-r/
+# https://en.wikibooks.org/wiki/R_Programming/Text_Processing#Regular_Expressions
+# https://towardsdatascience.com/a-gentle-introduction-to-regular-expressions-with-r-df5e897ca432
+
+test1 <- df_list_clean[[1]] %>%
+  select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3"))) %>%
+  mutate(compound_type = ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo", # ignore.case -> case insensitive
+                                ifelse(grepl("bromo", Compound),"bromo",
+                                       ifelse(grepl("chloro", Compound, ignore.case = TRUE),"chloro",
+                                              ifelse(grepl("phospho", Compound),"phospho",
+                                                     ifelse(grepl("sulf", Compound),"sulfur",
+                                                            ifelse(grepl("amin", Compound),"amine",
+                                                                   ifelse(grepl("naphthal", Compound),"naphthalene",
+                                                                          ifelse(grepl("Benze", Compound), "benzene", "others")))))))))
+
 # Iterative loop sub-setting data based on cumulative sum(Percent_Height): cumulative sum(Percent_Height) < cumulative sum(Percent_Area)
 
 # subset_df_list <- list()
@@ -136,15 +154,15 @@ all_subset_clean <- bind_rows(slice_df_list)
 
 
 # Create unique observation name with Compound + Sample_name + MF + RMF -----------------------------------------------
-for (i in 1:length(df_list)) {
-  df_list[[i]] <- df_list[[i]] %>% 
-    group_by(Compound) %>% 
-    summarise(across(everything(), mean))#  %>%
+# for (i in 1:length(df_list)) {
+#   df_list[[i]] <- df_list[[i]] %>% 
+#     group_by(Compound) %>% 
+#     summarise(across(everything(), mean))#  %>%
   # mutate(sample_name = file_list[[i]]) %>%
   # relocate(sample_name) %>%
   # mutate(Compound_and_sample = paste(Compound, "-", sample_name)) %>%
   # relocate(Compound_and_sample)
-}
+# }
 
 
 # Dominant Compounds (high % area & height) found across samples ------------------------------------------------
@@ -239,32 +257,66 @@ length(unique(unique_subset_clean$Compound))
 # Change Compound column to row names - maybe redundant
 # filter_quantile <- all_subset_clean %>%
 #   column_to_rownames(., var = "Compound")
-slice_df31 <- slice_df_list[[31]] %>%
-  mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", Area, "-", Height)) %>%
-  column_to_rownames(., var = "Compound")
 
-filter_quantile_pca <- PCA(slice_df31[c(3,4,7,8)], scale.unit = TRUE, ncp = 3, graph = TRUE)
+# Individual IL files
+# Data frame for sorting percent_area & percent_height from highest to lowest
+for (i in 1:length(df_list_clean)) {
+  testdf <- df_list_clean[[7]] %>%
+    mutate(Percent_Area = Area/sum(Area)) %>%
+    mutate(Percent_Height = Height/sum(Height)) %>%
+    arrange(desc(Percent_Height), desc(Percent_Area)) %>%
+    # Compound column convert to rownames
+    mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", Area, "-", Height))
+  
+  
+  # # subset data based on the largest number of iteration
+  for (row_num in 1:nrow(testdf)) {
+    # slice data based on condition of cumulative sum of percent_height, limit ~ 80%
+    if (sum(testdf[1:row_num,]$Percent_Height) > 0.99) {
+      testdf <- slice_head(testdf, n = row_num)
+      break
+    }
+  }
+  # Grouping compound types
+  testdf <- testdf %>%                                    # ignore.case -> case insensitive
+    mutate(compound_type = ifelse(grepl("bromo", Compound, ignore.case = TRUE),"bromo",
+                                  ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo",
+                                         ifelse(grepl("chlor", Compound, ignore.case = TRUE),"chloro",
+                                                ifelse(grepl("phosph", Compound, ignore.case = TRUE),"phospho",
+                                                       ifelse(grepl("sulf", Compound, ignore.case = TRUE),"sulfur",
+                                                              ifelse(grepl("amin", Compound, ignore.case = TRUE),"amine",
+                                                                     ifelse(grepl("naphthal", Compound, ignore.case = TRUE),"naphthalene",
+                                                                            ifelse(grepl("Benze", Compound, ignore.case = TRUE), "benzene","others"))))))))) %>%
+    # filter(!grepl("others", compound_type)) %>%
+    column_to_rownames(., var = "Compound")
+  
+  testdf$compound_type <- factor(testdf$compound_type, levels = c(unique(testdf$compound_type)))
+  
+  filter_quantile_pca <- PCA(testdf[c(3,4,11,12)], scale.unit = TRUE, graph = FALSE)
+  
+  # Investigate grouping of compounds
+  # REFERENCE: https://pca4ds.github.io/biplot-and-pca.html
+  fviz_pca_biplot(filter_quantile_pca, repel = TRUE, label = "var",
+                  habillage = testdf$compound_type,
+                  addEllipses=TRUE, palette = "Dark2",
+                  dpi = 480)
+  # Scree plot
+  fviz_eig(filter_quantile_pca, addlabels = TRUE)
+  
+  # Cos2 aka. Quality of representation
+  # Source: http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/112-pca-principal-component-analysis-essentials
+  var <- get_pca_var(filter_quantile_pca)
+  corrplot(var$cos2, is.corr = FALSE)
+  
+  fviz_cos2(filter_quantile_pca, choice = "var", axes = 1, top = 20)
+  
+  # Top variables (RT1, RT2,etc.) and compounds with highest contribution
+  fviz_contrib(filter_quantile_pca, choice = "var", axes = 1)
+  fviz_contrib(filter_quantile_pca, choice = "ind", axes = 2, top = 20) +
+    theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
+  # ggsave(paste0(getwd(), "/PCA graphs/", indi_IL_file_list[[i]], "_biplot_without_others.png"),
+  #        biplot)
+}
 
-fviz_eig(filter_quantile_pca,
-         addlabels = TRUE) 
 
-var <- get_pca_var(filter_quantile_pca)
-corrplot(var$cos2, is.corr = FALSE)
-fviz_cos2(filter_quantile_pca, choice = "var", axes = 1:2)
 
-ind <- get_pca_ind(filter_quantile_pca)
-fviz_cos2(filter_quantile_pca, choice = "ind")
-
-# Top 20 compounds with highest contribution
-fviz_contrib(filter_quantile_pca, choice = "ind", axes = 1:2, top = 20) +
-  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
-
-# Investigate the significant compounds
-slice_df31_biplot <- fviz_pca_biplot(filter_quantile_pca, 
-                                    repel = TRUE, 
-                                    col.var = "#2E9FDF",
-                                    col.ind = "red")
-                                    # habillage = slice_df1$Compound_type)
-ggsave(paste0(getwd(), "/PCA graphs/GasComp samples/slice_df31_biplot.png"), 
-       slice_df31_biplot,
-       dpi = 240)
