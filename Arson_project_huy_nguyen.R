@@ -48,9 +48,9 @@ file_list <- list.files(pattern = '*.xlsx')
 
 # Pipe operator for isolating IL types
 indi_IL_file_list <- file_list %>%
-  # .[!str_detect(., "D.xlsx")] %>%
-  # .[!str_detect(., "DieselComp")] %>%
-  # .[!str_detect(., "GasComp")] %>%
+  .[!str_detect(., "D.xlsx")] %>%
+  .[str_detect(., "DieselComp")] %>%
+  .[!str_detect(., "GasComp")] %>%
   .[!str_ends(., "check.xlsx")]
 
 # Import IL samples to list
@@ -83,16 +83,16 @@ df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$",
 # https://en.wikibooks.org/wiki/R_Programming/Text_Processing#Regular_Expressions
 # https://towardsdatascience.com/a-gentle-introduction-to-regular-expressions-with-r-df5e897ca432
 
-test1 <- df_list_clean[[1]] %>%
-  select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3"))) %>%
-  mutate(compound_type = ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo", # ignore.case -> case insensitive
-                                ifelse(grepl("bromo", Compound),"bromo",
-                                       ifelse(grepl("chloro", Compound, ignore.case = TRUE),"chloro",
-                                              ifelse(grepl("phospho", Compound),"phospho",
-                                                     ifelse(grepl("sulf", Compound),"sulfur",
-                                                            ifelse(grepl("amin", Compound),"amine",
-                                                                   ifelse(grepl("naphthal", Compound),"naphthalene",
-                                                                          ifelse(grepl("Benze", Compound), "benzene", "others")))))))))
+# test1 <- df_list_clean[[1]] %>%
+#   select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3"))) %>%
+#   mutate(compound_type = ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo", # ignore.case -> case insensitive
+#                                 ifelse(grepl("bromo", Compound),"bromo",
+#                                        ifelse(grepl("chloro", Compound, ignore.case = TRUE),"chloro",
+#                                               ifelse(grepl("phospho", Compound),"phospho",
+#                                                      ifelse(grepl("sulf", Compound),"sulfur",
+#                                                             ifelse(grepl("amin", Compound),"amine",
+#                                                                    ifelse(grepl("naphthal", Compound),"naphthalene",
+#                                                                           ifelse(grepl("Benze", Compound), "benzene", "others")))))))))
 
 # Iterative loop sub-setting data based on cumulative sum(Percent_Height): cumulative sum(Percent_Height) < cumulative sum(Percent_Area)
 
@@ -100,35 +100,25 @@ test1 <- df_list_clean[[1]] %>%
 slice_df_list <- list() # subset_df_list
 
 system.time({for (i in 1:length(df_list_clean)) { 
-  subset <- df_list_clean[[i]]
+  df <- df_list_clean[[i]] %>%
+    mutate(Percent_Area = Area/sum(Area)) %>%
+    mutate(Percent_Height = Height/sum(Height)) %>%
+    arrange(desc(Percent_Height), desc(Percent_Area)) %>%
+    # Compound column convert to rownames
+    mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", Area, "-", Height))
   
-  # Optional !! Remove unnecessary columns in data
-  subset_clean <- subset %>%
-    select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3")))
   
-  # METHOD 1: BASED ON CUMULATIVE SUM OF PERCENTAGE HEIGHT
-  
-  # Calculate percentage Peak Area and Peak Height
-  subset_clean$Percent_Area <- subset_clean$Area/sum(subset_clean$Area)
-  subset_clean$Percent_Height <- subset_clean$Height/sum(subset_clean$Height)
-
-  # Data frame for sorting percent_area & percent_height from highest to lowest
-  subset_clean <- subset_clean %>%
-    arrange(desc(Percent_Height), desc(Percent_Area))
-
-  # subset data based on the largest number of iteration
-  for (row_num in 1:nrow(subset_clean)) {
+  # # subset data based on the largest number of iteration
+  for (row_num in 1:nrow(df)) {
     # slice data based on condition of cumulative sum of percent_height, limit ~ 80%
-    if (sum(subset_clean[1:row_num,]$Percent_Height) > 0.99) {
-      new_subset_clean <- slice_head(subset_clean, n = row_num)
+    if (sum(df[1:row_num,]$Percent_Height) > 0.99) {
+      new_df <- slice_head(df, n = row_num)
       break
     }
   }
-  rm(subset_clean)
-  # Assign new slice df to subset_df_list 
-  slice_df_list[[i]] <- new_subset_clean
   
-  rm(new_subset_clean)
+  # Assign new slice df to subset_df_list 
+  slice_df_list[[i]] <- new_df
   
   # METHOD 2: BASED ON CUMULATIVE DISTRIBUTION OF AREA UNDER THE CURVE
 }})
@@ -152,6 +142,36 @@ for (i in 1:length(slice_df_list)) {
 
 all_subset_clean <- bind_rows(slice_df_list) 
 
+# PCA on indi_IL_type ---------------------------------------------------------------------------------------------
+
+testdf <- all_subset_clean %>%                                    # ignore.case -> case insensitive
+  # mutate(compound_type = ifelse(grepl("bromo", Compound, ignore.case = TRUE),"bromo",
+  #                               ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo",
+  #                                      ifelse(grepl("chlor", Compound, ignore.case = TRUE),"chloro",
+  #                                             ifelse(grepl("phosph", Compound, ignore.case = TRUE),"phospho",
+  #                                                    ifelse(grepl("sulf", Compound, ignore.case = TRUE),"sulfur",
+  #                                                           ifelse(grepl("amin", Compound, ignore.case = TRUE),"amine",
+  #                                                                  ifelse(grepl("naphthal", Compound, ignore.case = TRUE),"naphthalene",
+  #                                                                         ifelse(grepl("Benze", Compound, ignore.case = TRUE), "benzene","others"))))))))) %>%
+  # filter(!grepl("others", compound_type)) %>%
+  column_to_rownames(., var = "Compound")
+
+# MUST CONVERT GROUPING COLUMN to factor type, otherwise error "undefined columns selected" will happen for 'habillage'
+testdf$sample_name <- factor(testdf$sample_name, levels = c(unique(testdf$sample_name)))
+
+filter_quantile_pca <- PCA(testdf[c(3,4,11,12)], scale.unit = TRUE, graph = FALSE)
+
+# Investigate grouping of compounds
+# REFERENCE: https://pca4ds.github.io/biplot-and-pca.html
+pca <- fviz_pca_biplot(filter_quantile_pca, repel = TRUE, label = "var",
+                           habillage = testdf$sample_name,
+                           # palette = "Dark2",
+                           # addEllipses=TRUE,
+                           dpi = 480)
+ggsave(paste0(getwd(), "/PCA graphs/dieselcomp_pca.png"),
+       pca,
+       height = 8,
+       width = 15)
 
 # Create unique observation name with Compound + Sample_name + MF + RMF -----------------------------------------------
 # for (i in 1:length(df_list)) {
@@ -254,15 +274,15 @@ length(unique(unique_subset_clean$Compound))
 
 # PCA --------------------------------------------------------------------
 
-# Change Compound column to row names - maybe redundant
-# filter_quantile <- all_subset_clean %>%
-#   column_to_rownames(., var = "Compound")
+# Manual checkpoint for correlation of different variables (RT1,Rt2, %Area, %height, etc.) via covariance matrix 
+df_scaled <- scale(df_list_clean[[9]], center = TRUE, scale = TRUE)
+cov_df_scaled <- cov(df_scaled)
 
 
 # Individual IL files
 # Data frame for sorting percent_area & percent_height from highest to lowest
 for (i in 1:length(df_list_clean)) {
-  testdf <- df_list_clean[[7]] %>%
+  testdf <- df_list_clean[[i]] %>%
     mutate(Percent_Area = Area/sum(Area)) %>%
     mutate(Percent_Height = Height/sum(Height)) %>%
     arrange(desc(Percent_Height), desc(Percent_Area)) %>%
@@ -278,28 +298,35 @@ for (i in 1:length(df_list_clean)) {
       break
     }
   }
+  
+  # cov_df_scaled <- cov(scale(testdf %>%
+  #                      column_to_rownames(., var = "Compound"),
+  #                    center = TRUE, scale = TRUE))
+  # view(cov_df_scaled)
   # Grouping compound types
-  testdf <- testdf %>%                                    # ignore.case -> case insensitive
-    mutate(compound_type = ifelse(grepl("bromo", Compound, ignore.case = TRUE),"bromo",
-                                  ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo",
-                                         ifelse(grepl("chlor", Compound, ignore.case = TRUE),"chloro",
-                                                ifelse(grepl("phosph", Compound, ignore.case = TRUE),"phospho",
-                                                       ifelse(grepl("sulf", Compound, ignore.case = TRUE),"sulfur",
-                                                              ifelse(grepl("amin", Compound, ignore.case = TRUE),"amine",
-                                                                     ifelse(grepl("naphthal", Compound, ignore.case = TRUE),"naphthalene",
-                                                                            ifelse(grepl("Benze", Compound, ignore.case = TRUE), "benzene","others"))))))))) %>%
+  testdf <- all_subset_clean %>%                                    # ignore.case -> case insensitive
+    # mutate(compound_type = ifelse(grepl("bromo", Compound, ignore.case = TRUE),"bromo",
+    #                               ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo",
+    #                                      ifelse(grepl("chlor", Compound, ignore.case = TRUE),"chloro",
+    #                                             ifelse(grepl("phosph", Compound, ignore.case = TRUE),"phospho",
+    #                                                    ifelse(grepl("sulf", Compound, ignore.case = TRUE),"sulfur",
+    #                                                           ifelse(grepl("amin", Compound, ignore.case = TRUE),"amine",
+    #                                                                  ifelse(grepl("naphthal", Compound, ignore.case = TRUE),"naphthalene",
+    #                                                                         ifelse(grepl("Benze", Compound, ignore.case = TRUE), "benzene","others"))))))))) %>%
     # filter(!grepl("others", compound_type)) %>%
     column_to_rownames(., var = "Compound")
   
-  testdf$compound_type <- factor(testdf$compound_type, levels = c(unique(testdf$compound_type)))
+  # MUST CONVERT GROUPING COLUMN to factor type, otherwise error "undefined columns selected" will happen for 'habillage'
+  testdf$sample_name <- factor(testdf$sample_name, levels = c(unique(testdf$sample_name)))
   
   filter_quantile_pca <- PCA(testdf[c(3,4,11,12)], scale.unit = TRUE, graph = FALSE)
   
   # Investigate grouping of compounds
   # REFERENCE: https://pca4ds.github.io/biplot-and-pca.html
-  fviz_pca_biplot(filter_quantile_pca, repel = TRUE, label = "var",
-                  habillage = testdf$compound_type,
-                  addEllipses=TRUE, palette = "Dark2",
+  ILR_pca <- fviz_pca_biplot(filter_quantile_pca, repel = TRUE, label = "var",
+                  habillage = testdf$sample_name,
+                  # palette = "Dark2",
+                  addEllipses=TRUE,
                   dpi = 480)
   # Scree plot
   fviz_eig(filter_quantile_pca, addlabels = TRUE)
@@ -312,9 +339,12 @@ for (i in 1:length(df_list_clean)) {
   fviz_cos2(filter_quantile_pca, choice = "var", axes = 1, top = 20)
   
   # Top variables (RT1, RT2,etc.) and compounds with highest contribution
-  fviz_contrib(filter_quantile_pca, choice = "var", axes = 1)
-  fviz_contrib(filter_quantile_pca, choice = "ind", axes = 2, top = 20) +
+  fviz_contrib(filter_quantile_pca, choice = "var", axes = 1) # contrib of var to PC1
+  fviz_contrib(filter_quantile_pca, choice = "var", axes = 2) # contrib of var to PC2
+  fviz_contrib(filter_quantile_pca, choice = "ind", axes = 2, top = 20) + # contrib of indi to PC2
     theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
-  # ggsave(paste0(getwd(), "/PCA graphs/", indi_IL_file_list[[i]], "_biplot_without_others.png"),
-  #        biplot)
+  # ggsave(paste0(getwd(), "/PCA graphs/ILR_pca.png"),
+  #        ILR_pca,
+  #        height = 8,
+  #        width = 15)
 }
