@@ -257,7 +257,7 @@ length(unique(unique_subset_clean$Compound))
 # Change Compound column to row names - maybe redundant
 # filter_quantile <- all_subset_clean %>%
 #   column_to_rownames(., var = "Compound")
-<<<<<<< HEAD
+
 
 # Individual IL files
 # Data frame for sorting percent_area & percent_height from highest to lowest
@@ -318,75 +318,3 @@ for (i in 1:length(df_list_clean)) {
   # ggsave(paste0(getwd(), "/PCA graphs/", indi_IL_file_list[[i]], "_biplot_without_others.png"),
   #        biplot)
 }
-
-
-
-=======
-
-
-testdf <- df_list_clean[[9]] %>%
-  select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3"))) %>%
-  mutate(compound_type = ifelse(grepl("bromo", Compound),"bromo",
-                                ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo", # ignore.case -> case insensitive
-                                       ifelse(grepl("chloro", Compound, ignore.case = TRUE),"chloro",
-                                              ifelse(grepl("phospho", Compound),"phospho",
-                                                     ifelse(grepl("sulf", Compound),"sulfur",
-                                                            ifelse(grepl("amin", Compound),"amine",
-                                                                   ifelse(grepl("naphthal", Compound, ignore.case = TRUE),"naphthalene",
-                                                                          ifelse(grepl("Benze", Compound), "benzene", "others"))))))))) %>%
-  filter(!grepl("others", compound_type))
-
-testdf$compound_type <- factor(testdf$compound_type, levels = c("cyclo", "bromo",
-                                                              "chloro","phospho",
-                                                              "sulfur", "amine",
-                                                              "naphthalene", "benzene"))
-testdf$Percent_Area <- testdf$Area/sum(testdf$Area)
-testdf$Percent_Height <- testdf$Height/sum(testdf$Height)
-
-# Data frame for sorting percent_area & percent_height from highest to lowest
-testdf <- testdf %>%
-  arrange(desc(Percent_Height), desc(Percent_Area))
-
-# subset data based on the largest number of iteration
-for (row_num in 1:nrow(testdf)) {
-  # slice data based on condition of cumulative sum of percent_height, limit ~ 80%
-  if (sum(testdf[1:row_num,]$Percent_Height) > 0.99) {
-    testdf <- slice_head(testdf, n = row_num)
-    break
-  }
-}
-
-testdf_pca <- testdf %>%
-  mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", Area, "-", Height)) %>%
-  column_to_rownames(., var = "Compound")
-
-filter_quantile_pca <- PCA(testdf_pca[c(3,4,8,9)], scale.unit = TRUE, graph = TRUE)
-
-# Investigate grouping of compounds
-fviz_pca_biplot(filter_quantile_pca, repel = TRUE, label = "var",
-                habillage = testdf_pca$compound_type,
-               addEllipses=TRUE, palette = "Dark2",
-                dpi = 480)
-
-# ggsave(paste0(getwd(), "/PCA graphs/GasComp samples/slice_df31_biplot.png"), 
-#        slice_df31_biplot,
-#        dpi = 240)
-
-# Scree plot
-fviz_eig(filter_quantile_pca,
-         addlabels = TRUE)
-
-# Cos2 aka. Quality of representation
-# Source: http://www.sthda.com/english/articles/31-principal-component-methods-in-r-practical-guide/112-pca-principal-component-analysis-essentials
-var <- get_pca_var(filter_quantile_pca)
-corrplot(var$cos2, is.corr = FALSE)
-
-fviz_cos2(filter_quantile_pca, choice = "ind", axes = 2, top = 20) +
-  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 5, "cm"))
-
-# Top variables (RT1, RT2,etc.) and compounds with highest contribution
-fviz_contrib(filter_quantile_pca, choice = "var", axes = 1) +
-  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
-fviz_contrib(filter_quantile_pca, choice = "ind", axes = 2, top = 20) +
-  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
->>>>>>> 54ae86b1226f4c726d11a0ae197ffd8ea99a024c
