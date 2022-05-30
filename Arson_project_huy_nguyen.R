@@ -17,7 +17,7 @@ library(purrr)
 library(stringr)
 library(stringi)
 
-options(ggrepel.max.overlaps = 20)
+options(ggrepel.max.overlaps = 300)
 set.seed(12345)
 # Analysis Progress -------------------------------------------------------
 # fail to appropriately pivot_wider: each column should be name of compound and each row will be
@@ -48,10 +48,13 @@ file_list <- list.files(pattern = '*.xlsx')
 
 # Pipe operator for isolating IL types
 indi_IL_file_list <- file_list %>%
-  # .[str_detect(., "D.xlsx")] %>%
-  # .[str_detect(., "DieselComp")] %>%
+  .[!str_detect(., "D")] # %>%
+  # .[!str_detect(., "DieselComp")] %>%
   # .[str_detect(., "GasComp")] %>%
-  .[!str_ends(., "check.xlsx")]
+  # .[!str_ends(., "check.xlsx")]
+indi_IL_file_list <- c("0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00189.xlsx",
+                       "0220F00191.xlsx","0220F00387.xlsx","0220F00389.xlsx", "0220F00391.xlsx", 
+                       "0220F00887.xlsx", "0220F00889.xlsx", "0220F00891.xlsx", "0220F00894.xlsx")
 
 # Import IL samples to list
 df_list <- map(indi_IL_file_list, read_excel, sheet = 'Results')
@@ -224,81 +227,95 @@ system.time({
 length(unique(all_unique_compounds$Compound))
 # 832 compounds unique for  gasoline compounds
 
-# PCA on indi_IL_type ---------------------------------------------------------------------------------------------
 
-unique_subsetdf <- all_unique_compounds %>%                                    # ignore.case -> case insensitive
-  # mutate(compound_type = ifelse(grepl("bromo", Compound, ignore.case = TRUE),"bromo",
-  #                               ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo",
-  #                                      ifelse(grepl("chlor", Compound, ignore.case = TRUE),"chloro",
-  #                                             ifelse(grepl("phosph", Compound, ignore.case = TRUE),"phospho",
-  #                                                    ifelse(grepl("sulf", Compound, ignore.case = TRUE),"sulfur",
-  #                                                           ifelse(grepl("amin", Compound, ignore.case = TRUE),"amine",
-  #                                                                  ifelse(grepl("naphthal", Compound, ignore.case = TRUE),"naphthalene",
-  #                                                                         ifelse(grepl("Benze", Compound, ignore.case = TRUE), "benzene","others"))))))))) %>%
-  # filter(!grepl("others", compound_type)) %>%
-  mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", Area, "-", Height)) %>%
-  column_to_rownames(., var = "Compound")
-
-# MUST CONVERT GROUPING COLUMN to factor type, otherwise error "undefined columns selected" will happen for 'habillage'
-unique_subsetdf$sample_name <- factor(unique_subsetdf$sample_name, levels = c(unique(unique_subsetdf$sample_name)))
-
-# Histogram plot for Percent Height 
-
-hist(unique_subsetdf$Percent_Height, xlim = c(0, 0.002), breaks = 3000)
-quantile(unique_subsetdf$Percent_Height)
-filter_quantile <- subset(unique_subsetdf, 
-                          Percent_Height >  0.00021 &
-                            Percent_Height < 0.002)
-length(unique(filter_quantile$sample_name))
-
-# Manual checkpoint for correlation of different variables (RT1,Rt2, %Area, %height, etc.) via covariance matrix 
-# CAUTION!!! - If the variables are not strongly correlated (abs. covariance value must > 0.75), then there is no point to use PCA
-view(cov(scale(filter_quantile[c(1:12)], center = TRUE, scale = TRUE)))
-view(cor(scale(filter_quantile[c(1:12)], center = TRUE, scale = TRUE), method = "spearman"))
-
-# Compare the correlation matrix our data to iris data
-view(cor(scale(iris[c(1:4)], center = TRUE, scale = TRUE), method = "spearman"))
-
-filter_quantile_pca <- PCA(filter_quantile[c(3,4,11,12)]
-                           , scale.unit = TRUE, graph = FALSE)
-# Investigate grouping of compounds- REFERENCE: https://pca4ds.github.io/biplot-and-pca.html
-fviz_pca_biplot(filter_quantile_pca, repel = TRUE, label = "var",
-                       habillage = filter_quantile$sample_name,
-                       # addEllipses=TRUE,
-                       dpi = 480)
-
-# Compare the PCA of our data to iris data
-iris_pca <- PCA(iris[c(1:4)], scale.unit = TRUE)
-fviz_pca_biplot(iris_pca, repel = TRUE, label = "var",
-                habillage = iris$Species,
-                dpi = 480)
-# ggsave(paste0(getwd(), "/PCA graphs/dieselcomp_pca.png"),
-#        pca,
-#        height = 8,
-#        width = 15)
-
-# PCA using only Percent_height value on compounds that exist in only one sample
+# PCA -------------------------------------------------------------------------------------------------------------
+# Using Percent_Area and Percent_height value on compounds
 subset_filterquantile <- all_similar_compounds %>%
-  # mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", `Ion 1`, "-", `Ion 2`, "-", `Ion 3`)) %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
-  group_by(sample_name, Compound) %>% 
+  # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
+  group_by(sample_name, Compound) %>%
   summarise(across(c(Percent_Area, Percent_Height), mean)) %>%
   # filter(Percent_Height >  0.00021 & Percent_Height < 0.002) %>%
   # select(Compound, Percent_Height, sample_name) %>%
   pivot_wider(names_from = Compound, values_from = c(Percent_Area, Percent_Height))
 
-subset_filterquantilePCA <- PCA(subset_filterquantile[c(2:69)], scale.unit = TRUE, graph = FALSE)
+subset_filterquantilePCA <- PCA(subset_filterquantile[c(2:dim(subset_filterquantile)[2])], scale.unit = TRUE, graph = FALSE)
 
+# Scree plot
 fviz_eig(subset_filterquantilePCA,
          addlabels = TRUE)
 
-fviz_pca_biplot(subset_filterquantilePCA, 
-                # repel = TRUE,
-                label = "ind",
+# Get coordinates of variables
+fviz_pca_var(subset_filterquantilePCA, col.var = "black", select.var = list(cos2 = 20))
+var_coor <- get_pca_var(subset_filterquantilePCA)$coord
+Gasoline_station1_3_8 <- fviz_pca_biplot(subset_filterquantilePCA, 
+                # select.var = name, # list(cos2 = 140), # Top x active variables with the highest cos2
+                repel = TRUE,
                 axes = c(1,2),
+                label = "ind",
                 habillage = subset_filterquantile$sample_name,
                 # addEllipses=TRUE,
                 dpi = 480)
+
+ggsave(paste0(getwd(), "/PCA graphs/Gasoline_station1_3_8.png"),
+       Gasoline_station1_3_8,
+       height = 8,
+       width = 15)
+
+# Selecting representative Diesel compounds for each diesel sample ---------------------------------------------------------------------------
+
+# Quadrant 1  - dim1 [0 to 1], dim2 [0 to -0.25] - Influencer for sample 0220F001D
+sample_0220F001D_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 > 0.7 & Dim.2 > -0.4 & Dim.2 < -0.15)
+
+# Quadrant 2 - dim1 [0 to 1], dim2 [0 to 0.15] - Influencer for sample 0220F009-2D 
+sample_0220F009_2D_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 > 0.5 & Dim.2 > 0.05 & Dim.2 < 0.1)
+
+# Quadrant 3 - dim1 [0 to 1], dim2 [0.15 to 0.25] - Influencer for sample 0220F009D
+sample_0220F009D_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < 0.5 & Dim.1 > 0.25 & Dim.2 > 0.3 & Dim.2 < 0.4)
+
+# Quadrant 4  - dim1 [0 to -1], dim2 [0.6 to 0.9]- Influencer for sample 0220F005D
+sample_0220F005D_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < -0.3 & Dim.1 > -0.5 & Dim.2 > 0.6 & Dim.2 < 0.9)
+
+# Quadrant 5  - dim1 [0 to -1], dim2 [-0.5 to -0.75]- Influencer for sample 0220FDieselComp1,2
+sample_0220FDieselComp1_2_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < -0.7 & Dim.2 < -0.5 & Dim.2 > -0.75)
+
+# Quadrant 6  - dim1 [0 to -1], dim2 [-0.75 to -1]- Influencer for sample 0220FDieselComp3
+sample_0220FDieselComp3_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < -0.15 & Dim.2 < -0.7)
+
+# Biplot
+name <- list(name = sample_0220FDieselComp3_influencer$compound)
+# fviz_cos2(subset_filterquantilePCA, choice = "var", axes = 1, top = 20)
+biplot_pca <- fviz_pca_biplot(subset_filterquantilePCA, 
+                              select.var = name, # list(cos2 = 140), # Top x active variables with the highest cos2
+                              repel = TRUE,
+                              axes = c(1,2),
+                              label = "var",
+                              habillage = subset_filterquantile$sample_name,
+                              # addEllipses=TRUE,
+                              dpi = 480)
+
+ggsave(paste0(getwd(), "/PCA graphs/sample_0220FDieselComp3_influencer.png"),
+              biplot_pca,
+              height = 8,
+              width = 15)
+
+
+
+
+# Selecting representative Gasoline compounds for each Gasoline sample ---------------------------------------------------------
+
 
 # PCA --------------------------------------------------------------------
 
@@ -371,3 +388,59 @@ for (i in 1:length(df_list_clean)) {
   #        height = 8,
   #        width = 15)
 }
+
+# PCA on indi_IL_type ---------------------------------------------------------------------------------------------
+# Using only Percent_height value on compounds that exist in only one sample
+unique_subsetdf <- all_unique_compounds %>%                                    # ignore.case -> case insensitive
+  # mutate(compound_type = ifelse(grepl("bromo", Compound, ignore.case = TRUE),"bromo",
+  #                               ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo",
+  #                                      ifelse(grepl("chlor", Compound, ignore.case = TRUE),"chloro",
+  #                                             ifelse(grepl("phosph", Compound, ignore.case = TRUE),"phospho",
+  #                                                    ifelse(grepl("sulf", Compound, ignore.case = TRUE),"sulfur",
+  #                                                           ifelse(grepl("amin", Compound, ignore.case = TRUE),"amine",
+  #                                                                  ifelse(grepl("naphthal", Compound, ignore.case = TRUE),"naphthalene",
+  #                                                                         ifelse(grepl("Benze", Compound, ignore.case = TRUE), "benzene","others"))))))))) %>%
+  # filter(!grepl("others", compound_type)) %>%
+  mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", Area, "-", Height)) %>%
+  column_to_rownames(., var = "Compound")
+
+# MUST CONVERT GROUPING COLUMN to factor type, otherwise error "undefined columns selected" will happen for 'habillage'
+unique_subsetdf$sample_name <- factor(unique_subsetdf$sample_name, levels = c(unique(unique_subsetdf$sample_name)))
+
+# Histogram plot for Percent Height 
+
+hist(all_similar_compounds$Percent_Height,
+     # xlim = c(0, 0.002), 
+     breaks = 3000)
+quantile(all_similar_compounds$Percent_Height)
+filter_quantile <- subset(all_similar_compounds, 
+                          Percent_Height >  0.0005 &
+                            Percent_Height < 0.002)
+length(unique(filter_quantile$sample_name))
+
+# Manual checkpoint for correlation of different variables (RT1,Rt2, %Area, %height, etc.) via covariance matrix 
+# CAUTION!!! - If the variables are not strongly correlated (abs. covariance value must > 0.75), then there is no point to use PCA
+view(cov(scale(filter_quantile[c(1:12)], center = TRUE, scale = TRUE)))
+view(cor(scale(filter_quantile[c(1:12)], center = TRUE, scale = TRUE), method = "spearman"))
+
+# Compare the correlation matrix our data to iris data
+view(cor(scale(iris[c(1:4)], center = TRUE, scale = TRUE), method = "spearman"))
+
+filter_quantile_pca <- PCA(filter_quantile[c(3,4,11,12)]
+                           , scale.unit = TRUE, graph = FALSE)
+# Investigate grouping of compounds- REFERENCE: https://pca4ds.github.io/biplot-and-pca.html
+fviz_pca_biplot(filter_quantile_pca, repel = TRUE, label = "var",
+                habillage = filter_quantile$sample_name,
+                # addEllipses=TRUE,
+                dpi = 480)
+
+# Compare the PCA of our data to iris data
+iris_pca <- PCA(iris[c(1:4)], scale.unit = TRUE)
+fviz_pca_biplot(iris_pca, repel = TRUE, label = "var",
+                habillage = iris$Species,
+                dpi = 480)
+# ggsave(paste0(getwd(), "/PCA graphs/dieselcomp_pca.png"),
+#        pca,
+#        height = 8,
+#        width = 15)
+
