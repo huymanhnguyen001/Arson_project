@@ -16,6 +16,9 @@ library(corrplot)
 library(purrr)
 library(stringr)
 library(stringi)
+library(ChemoSpec) # ANOVA-PCA combo
+library(DiscriMiner) # PLS-DA combo
+library(missMDA)
 
 options(ggrepel.max.overlaps = 300)
 set.seed(12345)
@@ -48,21 +51,16 @@ file_list <- list.files(pattern = '*.xlsx')
 
 # Pipe operator for isolating IL types
 indi_IL_file_list <- file_list %>%
-  .[!str_detect(., "D")] # %>%
-  # .[!str_detect(., "DieselComp")] %>%
+  # .[str_detect(., "D")]  %>%
+  # .[str_detect(., "DieselComp")] %>%
   # .[str_detect(., "GasComp")] %>%
-  # .[!str_ends(., "check.xlsx")]
-indi_IL_file_list <- c("0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00189.xlsx",
-                       "0220F00191.xlsx","0220F00387.xlsx","0220F00389.xlsx", "0220F00391.xlsx", 
-                       "0220F00887.xlsx", "0220F00889.xlsx", "0220F00891.xlsx", "0220F00894.xlsx")
+  .[!str_ends(., "check.xlsx")]
 
 # Import IL samples to list
 df_list <- map(indi_IL_file_list, read_excel, sheet = 'Results')
 
 # Combine all data
 # all_data <- bind_rows(df_list)
-
-
 # Checkpoint for dimethylbenzene
 # str_which(all_data$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
 
@@ -97,8 +95,8 @@ df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$",
 #                                                                    ifelse(grepl("naphthal", Compound),"naphthalene",
 #                                                                           ifelse(grepl("Benze", Compound), "benzene", "others")))))))))
 
-# Iterative loop sub-setting data based on cumulative sum(Percent_Height): cumulative sum(Percent_Height) < cumulative sum(Percent_Area)
 
+# Iterative loop sub-setting data based on cumulative sum(Percent_Height): cumulative sum(Percent_Height)  --------
 # subset_df_list <- list()
 slice_df_list <- list() # subset_df_list
 
@@ -146,7 +144,7 @@ for (i in 1:length(slice_df_list)) {
 all_subset_clean <- bind_rows(slice_df_list) 
 
 
-# Dominant Compounds (high % area & height) found across samples ------------------------------------------------
+# Similar Compounds (high % area & height) found across samples ------------------------------------------------
 # Similar compound from IL samples
 all_similar_compounds <- data.frame(matrix(ncol = ncol(all_subset_clean), nrow = 0)) #all_gasoline_subset_clean_1st_filter
 colnames(all_similar_compounds) <- colnames(all_subset_clean)
@@ -196,6 +194,8 @@ length(unique(all_similar_compounds$Compound))
 # When include 99% of cumulative peak height, all gasoline composite samples share 248 compounds in common
 # When include 99% of cumulative peak height, all IL samples share 29 compounds in common
 
+
+
 #--------------------------------------------------------------------------------------
 # 28 out of 28 gasoline samples share 25 common compounds
 # more than 15 out of 28 gasoline samples share 96 common compounds
@@ -208,7 +208,7 @@ length(unique(all_different_compounds$Compound))
 # examine the cumulative peak height and peak area per sample of compounds found across 39 samples
 
 
-# Filtering unique compound for each sample -----------------------------------------------------------------------
+# OPTIONAL:: Filtering unique compound for each sample -----------------------------------------------------------------------
 all_unique_compounds <- data.frame(matrix(ncol = ncol(all_different_compounds), nrow = 0))
 colnames(all_unique_compounds) <- colnames(all_different_compounds)
 all_unique_compounds$Compound <- as.character(all_unique_compounds$Compound)
@@ -228,41 +228,149 @@ length(unique(all_unique_compounds$Compound))
 # 832 compounds unique for  gasoline compounds
 
 
+
+
+
 # PCA -------------------------------------------------------------------------------------------------------------
 # Using Percent_Area and Percent_height value on compounds
-subset_filterquantile <- all_similar_compounds %>%
+# Diesel and DieselComp cluster
+diesel_sample <- c("0220F001D.xlsx", "0220F005D.xlsx", "0220F009-2D.xlsx", "0220F009D.xlsx",
+                   "0220FDieselComp1.xlsx", "0220FDieselComp2.xlsx", "0220FDieselComp3.xlsx")
+dieselcomp_sample <- c("0220FDieselComp1.xlsx", "0220FDieselComp2.xlsx", "0220FDieselComp3.xlsx")
+
+# All gasoline
+gas_clusall <- c(
+  "0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00387.xlsx", "0220F00887.xlsx"
+  ,"0220F00189.xlsx","0220F00389.xlsx", "0220F00889.xlsx"
+  ,"0220F00191.xlsx", "0220F00391.xlsx","0220F00891.xlsx"
+  ,"0220F00894.xlsx", "0220F00587.xlsx","0220F00589.xlsx","0220F00591.xlsx",
+  "0220F00787.xlsx","0220F00789.xlsx","0220F00791.xlsx",
+  "0220F00987.xlsx", "0220F00989.xlsx", "0220F00991.xlsx"
+)
+
+# Gasoline station 1, 3, 8 cluster - cluster 1
+gas_clus1_sample <- c(
+"0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00387.xlsx", "0220F00887.xlsx"
+,"0220F00189.xlsx","0220F00389.xlsx", "0220F00889.xlsx"
+,"0220F00191.xlsx", "0220F00391.xlsx","0220F00891.xlsx"
+,"0220F00894.xlsx", 
+)
+
+# Gasoline station 5, 7, 9 cluster - cluster 2
+gas_clus2_sample <- c("0220F00587.xlsx","0220F00589.xlsx","0220F00591.xlsx",
+                       "0220F00787.xlsx","0220F00789.xlsx","0220F00791.xlsx",
+                       "0220F00987.xlsx", "0220F00989.xlsx", "0220F00991.xlsx")
+
+# Checkpoint for %Area and %Height distribution of unique compounds in all_similar_compounds
+ggplot(all_similar_compounds, aes(x = Percent_Height)) + 
+  facet_wrap(~Compound, scales = "free_y") + 
+  geom_histogram(binwidth = 0.0005) 
+# Checkpoint Result: OK, it seems like both %Area and %Height have centralized distribution->it"s safe to calculate mean
+
+# PCA on IL cluster
+subset_filterquantile_all <- all_subset_clean %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
   group_by(sample_name, Compound) %>%
-  summarise(across(c(Percent_Area, Percent_Height), mean)) %>%
-  # filter(Percent_Height >  0.00021 & Percent_Height < 0.002) %>%
-  # select(Compound, Percent_Height, sample_name) %>%
-  pivot_wider(names_from = Compound, values_from = c(Percent_Area, Percent_Height))
+  summarise(across(Percent_Area, mean)) %>% # c(Percent_Area, Percent_Height) assuming that duplicates of similar compounds has the normal distribution
+  # filter(sample_name %in% gas_clus2_sample) %>%
+  pivot_wider(names_from = Compound, values_from = Percent_Area) %>% # c(Percent_Area, Percent_Height)
+  column_to_rownames(., var = "sample_name")
 
-subset_filterquantilePCA <- PCA(subset_filterquantile[c(2:dim(subset_filterquantile)[2])], scale.unit = TRUE, graph = FALSE)
+# remove columns that has less than 5 unique values, including NA as a unique value
+remove_col <- c()
+for (col in 1:ncol(subset_filterquantile_all)) {
+  if (length(unique(subset_filterquantile_all[,col])) < 4) {
+    remove_col <- c(remove_col, col)
+  }
+}
+subset_filterquantile_removecol <- subset(subset_filterquantile, select = -remove_col)
+
+# Without imputePCA function, PCA input full of NA values
+subset_filterquantile1 <- rownames_to_column(subset_filterquantile_removecol, "sample_name") 
+subset_filterquantile1$sample_name <- factor(subset_filterquantile1$sample_name, 
+                                             levels = c(unique(subset_filterquantile1$sample_name)))
+subset_filterquantilePCA <- PCA(subset_filterquantile1[c(2:dim(subset_filterquantile1)[2])], 
+                                scale.unit = TRUE, 
+                                graph = FALSE)
+
+# TRy imputePCA function, PCA input without NA values
+subset_filterquantilePCA_impute <- imputePCA(subset_filterquantile_removecol, 
+                                             # ncp = 2,
+                                             scale = TRUE,
+                                             method = "Regularized",
+                                             seed = 651456)
+
+subset_filterquantile2 <- rownames_to_column(data.frame(subset_filterquantilePCA_impute$completeObs),
+                                             "sample_name")
+
+subset_filterquantile2 <- subset_filterquantile2 %>%
+  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
+  filter(sample_name %in% gas_clusall)
+
+res.pca <- PCA(subset_filterquantile2[c(2:dim(subset_filterquantile2)[2])], 
+               scale.unit = TRUE, 
+               graph = FALSE)
+
+# PCA with all_similar_compounds 
+subset_filterquantile_similar <- all_similar_compounds %>%
+  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
+  # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
+  group_by(sample_name, Compound) %>%
+  summarise(across(Percent_Area, mean)) %>% # c(Percent_Area, Percent_Height) assuming that duplicates of similar compounds has the normal distribution
+  filter(sample_name %in% gas_clusall) %>%
+  pivot_wider(names_from = Compound, values_from = Percent_Area)# c(Percent_Area, Percent_Height)
+
+all_similar_compounds_PCA <- PCA(subset_filterquantile_similar[c(2:dim(subset_filterquantile_similar)[2])], 
+                                 scale.unit = TRUE, 
+                                 graph = FALSE)
 
 # Scree plot
 fviz_eig(subset_filterquantilePCA,
          addlabels = TRUE)
 
-# Get coordinates of variables
-fviz_pca_var(subset_filterquantilePCA, col.var = "black", select.var = list(cos2 = 20))
-var_coor <- get_pca_var(subset_filterquantilePCA)$coord
-Gasoline_station1_3_8 <- fviz_pca_biplot(subset_filterquantilePCA, 
-                # select.var = name, # list(cos2 = 140), # Top x active variables with the highest cos2
+fviz_pca_var(subset_filterquantilePCA, 
+             col.var = "black", 
+             select.var = list(cos2 = 20))
+
+fviz_pca_biplot(res.pca, # subset_filterquantilePCA,
+                select.var = list(cos2 = 50),# name, # list(cos2 = 140), # Top x active variables with the highest cos2
                 repel = TRUE,
                 axes = c(1,2),
                 label = "ind",
-                habillage = subset_filterquantile$sample_name,
+                habillage = subset_filterquantile2$sample_name,
                 # addEllipses=TRUE,
                 dpi = 480)
 
-ggsave(paste0(getwd(), "/PCA graphs/Gasoline_station1_3_8.png"),
-       Gasoline_station1_3_8,
-       height = 8,
-       width = 15)
+# ggsave(paste0(getwd(), "/PCA graphs/Gasoline_station5_7_9.png"),
+#        Gasoline_station5_7_9,
+#        height = 8,
+#        width = 15)
+
+var <- get_pca_var(subset_filterquantilePCA)
+var_coord <- var$coord
+var_contrib <- var$contrib
+
+var_cos2 <- var$cos2
+fviz_contrib(subset_filterquantilePCA, choice = "var", axes = 1:2, top = 20) + 
+  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
+corrplot(var$cos2, is.corr = FALSE)
+
+
+
+# Top variables (RT1, RT2,etc.) and compounds with highest contribution
+fviz_contrib(subset_filterquantilePCA, choice = "var", axes = 1) # contrib of var to PC
+fviz_contrib(subset_filterquantilePCA, choice = "ind", axes = 2, top = 20) + # contrib of indi to PC2
+  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
+
+
+
+
+
 
 # Selecting representative Diesel compounds for each diesel sample ---------------------------------------------------------------------------
+# Get coordinates of variables
+var_coor <- get_pca_var(subset_filterquantilePCA)$coord
 
 # Quadrant 1  - dim1 [0 to 1], dim2 [0 to -0.25] - Influencer for sample 0220F001D
 sample_0220F001D_influencer <- var_coor %>% 
@@ -311,10 +419,180 @@ ggsave(paste0(getwd(), "/PCA graphs/sample_0220FDieselComp3_influencer.png"),
               height = 8,
               width = 15)
 
+# Selecting representative Gasoline Composite compounds for each Gasoline sample ---------------------------------------------------------
+var_coor <- get_pca_var(subset_filterquantilePCA)$coord
+sample_0220GasComp1_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 > 0.025 & Dim.1 < 0.06 & Dim.2 > 0)
+
+sample_0220GasComp2_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < -0.85 & Dim.2 < -0.425 & Dim.2 > -0.47)
+
+sample_0220GasComp3_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 > 0.7 & Dim.2 < -0.5 & Dim.2 > -0.55)
+
+# Biplot
+name <- list(name = sample_0220GasComp2_influencer$compound)
+# fviz_cos2(subset_filterquantilePCA, choice = "var", axes = 1, top = 20)
+biplot_pca <-
+  fviz_pca_biplot(subset_filterquantilePCA, 
+                              select.var = name, # list(cos2 = 140), # Top x active variables with the highest cos2
+                              repel = TRUE,
+                              axes = c(1,2),
+                              label = "var",
+                              habillage = subset_filterquantile$sample_name,
+                              # addEllipses=TRUE,
+                              dpi = 480)
+
+ggsave(paste0(getwd(), "/PCA graphs/sample_0220GasComp2_influencer.png"),
+       biplot_pca,
+       height = 8,
+       width = 15)
+
+
+# Selecting representative DieselComp compounds for each dieselcomp sample ---------------------------------------------------------------------------
+var_coor <- get_pca_var(subset_filterquantilePCA)$coord
+# Quadrant 1  - dim1 [0 to 1], dim2 [0 to -0.25] - Influencer for sample 0220F001D
+sample_0220FDieselComp1_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < -0.75 & Dim.2 > 0.55 & Dim.2 < 0.6)
+
+# Quadrant 2 - dim1 [0 to 1], dim2 [0 to 0.15] - Influencer for sample 0220F009-2D 
+sample_0220FDieselComp2_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < -0.15 & Dim.1 > -0.19 & Dim.2 < -0.75)
+
+# Quadrant 3 - dim1 [0 to 1], dim2 [0.15 to 0.25] - Influencer for sample 0220F009D
+sample_0220FDieselComp3_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 > 0.75 & Dim.2 > 0.35 & Dim.2 < 0.4)
+
+# Biplot
+name <- list(name = sample_0220FDieselComp3_influencer$compound)
+# fviz_cos2(subset_filterquantilePCA, choice = "var", axes = 1, top = 20)
+biplot_pca <-
+  fviz_pca_biplot(subset_filterquantilePCA, 
+                              select.var = name, # list(cos2 = 140), # Top x active variables with the highest cos2
+                              repel = TRUE,
+                              axes = c(1,2),
+                              label = "var",
+                              habillage = subset_filterquantile$sample_name,
+                              # addEllipses=TRUE,
+                              dpi = 480)
+
+ggsave(paste0(getwd(), "/PCA graphs/sample_0220FDieselComp3_influencer.png"),
+       biplot_pca,
+       height = 8,
+       width = 15)
 
 
 
-# Selecting representative Gasoline compounds for each Gasoline sample ---------------------------------------------------------
+
+# Selecting representative Gasoline station 1, 3, 8 by gas 91 ---------------------------------------------------------------------------
+var_coor <- get_pca_var(subset_filterquantilePCA)$coord
+
+sample_0220F00191_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 > 0 & Dim.2 < -0.4 & Dim.2 > -0.55)
+
+sample_0220F00391_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < 0 & Dim.2 < -0.4 & Dim.2 > -0.6)
+
+sample_0220F00891_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < 0 & Dim.1 > -0.1 & Dim.2 > 0.75)
+
+# Biplot
+name <- list(name = sample_0220F00891_influencer$compound)
+# fviz_cos2(subset_filterquantilePCA, choice = "var", axes = 1, top = 20)
+biplot_pca <-
+  fviz_pca_biplot(subset_filterquantilePCA, 
+                  select.var = name, # list(cos2 = 140), # Top x active variables with the highest cos2
+                  repel = TRUE,
+                  axes = c(1,2),
+                  label = "var",
+                  habillage = subset_filterquantile$sample_name,
+                  # addEllipses=TRUE,
+                  dpi = 480)
+
+ggsave(paste0(getwd(), "/PCA graphs/sample_0220F00891_influencer.png"),
+       biplot_pca,
+       height = 8,
+       width = 15)
+
+# Selecting representative Gasoline station 1, 3, 8 by gas 87 ---------------------------------------------------------------------------
+var_coor <- get_pca_var(subset_filterquantilePCA)$coord
+
+sample_0220F00187_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 > 0 & Dim.2 > 0.15 & Dim.2 < 0.25)
+
+sample_0220F00387_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < -0.5 & Dim.2 <  -0.6)
+
+sample_0220F00887_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < -0.5 & Dim.2 > 0.66)
+
+# Biplot
+name <- list(name = sample_0220F00887_influencer$compound)
+# fviz_cos2(subset_filterquantilePCA, choice = "var", axes = 1, top = 20)
+biplot_pca <-
+  fviz_pca_biplot(subset_filterquantilePCA, 
+                  select.var = name, # list(cos2 = 140), # Top x active variables with the highest cos2
+                  repel = TRUE,
+                  axes = c(1,2),
+                  label = "var",
+                  habillage = subset_filterquantile$sample_name,
+                  # addEllipses=TRUE,
+                  dpi = 480)
+
+ggsave(paste0(getwd(), "/PCA graphs/sample_0220F00887_influencer.png"),
+       biplot_pca,
+       height = 8,
+       width = 15)
+
+
+
+
+# Selecting representative Gasoline station 1, 3, 8 by gas 89 ---------------------------------------------------------------------------
+var_coor <- get_pca_var(subset_filterquantilePCA)$coord
+
+sample_0220F00189_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 > 0.15 & Dim.1 < 0.35 & Dim.2 < -0.8)
+
+sample_0220F00389_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 < 0 & Dim.2 > 0.2 & Dim.2 < 0.4)
+
+sample_0220F00889_influencer <- var_coor %>% 
+  as_tibble(rownames = "compound") %>%
+  filter(Dim.1 > 0 & Dim.2 > 0.56 & Dim.2 < 0.66)
+
+# Biplot
+name <- list(name = sample_0220F00889_influencer$compound)
+# fviz_cos2(subset_filterquantilePCA, choice = "var", axes = 1, top = 20)
+biplot_pca <-
+  fviz_pca_biplot(subset_filterquantilePCA, 
+                  select.var = name, # list(cos2 = 140), # Top x active variables with the highest cos2
+                  repel = TRUE,
+                  axes = c(1,2),
+                  label = "var",
+                  habillage = subset_filterquantile$sample_name,
+                  # addEllipses=TRUE,
+                  dpi = 480)
+
+ggsave(paste0(getwd(), "/PCA graphs/sample_0220F00889_influencer.png"),
+       biplot_pca,
+       height = 8,
+       width = 15)
+
+
 
 
 # PCA --------------------------------------------------------------------
