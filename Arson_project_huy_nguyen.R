@@ -19,6 +19,11 @@ library(stringi)
 library(ChemoSpec) # ANOVA-PCA combo
 library(DiscriMiner) # PLS-DA combo
 library(missMDA)
+# library(tsne)
+library(Rtsne)
+library(rgl)
+library(plotly)
+library(umap)
 
 options(ggrepel.max.overlaps = 300)
 set.seed(12345)
@@ -46,6 +51,81 @@ filtering <- function (data, filter_list) { #, percentile, column_list
  # Notin function
 `%notin%` <- Negate(`%in%`)
 
+# The InDaPCA function performs PCA with incomplete data -- WORSE THAN imputePCA
+InDaPCA<-function(RAWDATA){
+  
+  #scaling
+  
+  X <- scale(RAWDATA, center = T, scale = T)
+  
+  #correlation
+  
+  C<-cor(X, use="pairwise.complete.obs")
+  
+  #Eigenvalue
+  
+  Eigenvalues<-eigen(C)$values
+  
+  Eigenvalues.pos<-Eigenvalues[Eigenvalues>0]
+  
+  Eigenvalues.pos.as.percent<-100*Eigenvalues.pos/sum(Eigenvalues.pos)
+  
+  #Eigenvectors
+  
+  V <- eigen(C)$vectors
+  
+  #Principal components
+  
+  X2<-X
+  
+  X2[is.na(X2)] <- 0
+  
+  PC <- as.matrix(X2) %*% V
+  
+  #object.standardized
+  
+  PCstand1 <- PC[,Eigenvalues>0]/sqrt(Eigenvalues.pos)[col(PC[,Eigenvalues>0])]
+  
+  PCstand2 <- PCstand1 / sqrt(nrow(PC) - 1)
+  
+  #loadings
+  
+  #loadings<-V%*%diag(sqrt(Eigenvalues.pos))
+  
+  loadings<-cor(X,PC,use="pairwise.complete.obs")
+  
+  #arrows for biplot
+  
+  arrows<-cor(X,PC,use="pairwise.complete.obs")*sqrt(nrow(X) - 1)
+  
+  #output
+  
+  PCA <- list()
+  
+  PCA$Correlation.matrix<-C
+  
+  PCA$Eigenvalues<-Eigenvalues
+  
+  PCA$Positive.Eigenvalues<-Eigenvalues.pos
+  
+  PCA$Positive.Eigenvalues.as.percent<-100*Eigenvalues.pos/sum(Eigenvalues.pos)
+  
+  PCA$Square.root.of.eigenvalues <- sqrt(Eigenvalues.pos)
+  
+  PCA$Eigenvectors<-V
+  
+  PCA$Component.scores<-PC
+  
+  PCA$Variable.scores<-loadings
+  
+  PCA$Biplot.objects<-PCstand2
+  
+  PCA$Biplot.variables<-arrows
+  
+  return(PCA)
+  
+}
+
 # Data import --------------------------------------------
 file_list <- list.files(pattern = '*.xlsx')
 
@@ -58,12 +138,6 @@ indi_IL_file_list <- file_list %>%
 
 # Import IL samples to list
 df_list <- map(indi_IL_file_list, read_excel, sheet = 'Results')
-
-# Combine all data
-# all_data <- bind_rows(df_list)
-# Checkpoint for dimethylbenzene
-# str_which(all_data$Compound, "(?=.*dimethyl)(?=.*benzene)") #2,4-Dinitro-1,3-dimethyl-benzene or (1,4-Dimethylpent-2-enyl)benzene
-
 
 # Filtering out column bleed and solvent --------------------------------------
 
@@ -272,69 +346,48 @@ subset_filterquantile_all <- all_subset_clean %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
   group_by(sample_name, Compound) %>%
-  summarise(across(Percent_Area, mean)) %>% # c(Percent_Area, Percent_Height) assuming that duplicates of similar compounds has the normal distribution
+  # Here we collapse the duplicates compound by calculate the mean of Percent Area,
+  # assuming that duplicates of similar compounds has the normal distribution
+  summarise(across(Percent_Area, mean)) %>% 
   # filter(sample_name %in% gas_clus2_sample) %>%
   pivot_wider(names_from = Compound, values_from = Percent_Area) %>% # c(Percent_Area, Percent_Height)
   column_to_rownames(., var = "sample_name")
 
 # remove columns that has less than 5 unique values, including NA as a unique value
+# Aka. we remove compounds that exist in less than 3 samples ("lower bound compound filter")
 remove_col <- c()
 for (col in 1:ncol(subset_filterquantile_all)) {
   if (length(unique(subset_filterquantile_all[,col])) < 4) {
     remove_col <- c(remove_col, col)
   }
 }
-subset_filterquantile_removecol <- subset(subset_filterquantile, select = -remove_col)
-
-# Without imputePCA function, PCA input full of NA values
-subset_filterquantile1 <- rownames_to_column(subset_filterquantile_removecol, "sample_name") 
-subset_filterquantile1$sample_name <- factor(subset_filterquantile1$sample_name, 
-                                             levels = c(unique(subset_filterquantile1$sample_name)))
-subset_filterquantilePCA <- PCA(subset_filterquantile1[c(2:dim(subset_filterquantile1)[2])], 
-                                scale.unit = TRUE, 
-                                graph = FALSE)
+subset_filterquantile_removecol <- subset(subset_filterquantile_all, select = -remove_col)
 
 # TRy imputePCA function, PCA input without NA values
 subset_filterquantilePCA_impute <- imputePCA(subset_filterquantile_removecol, 
                                              # ncp = 2,
                                              scale = TRUE,
-                                             method = "Regularized",
-                                             seed = 651456)
+                                             maxiter = 2000,
+                                             method = "Regularized", #iterative approach-less overfitting
+                                             seed = 651)
 
 subset_filterquantile2 <- rownames_to_column(data.frame(subset_filterquantilePCA_impute$completeObs),
                                              "sample_name")
 
 subset_filterquantile2 <- subset_filterquantile2 %>%
-  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
-  filter(sample_name %in% gas_clusall)
+  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
+  # %>% filter(sample_name %in% gas_clusall)
 
 res.pca <- PCA(subset_filterquantile2[c(2:dim(subset_filterquantile2)[2])], 
                scale.unit = TRUE, 
                graph = FALSE)
 
-# PCA with all_similar_compounds 
-subset_filterquantile_similar <- all_similar_compounds %>%
-  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
-  # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
-  group_by(sample_name, Compound) %>%
-  summarise(across(Percent_Area, mean)) %>% # c(Percent_Area, Percent_Height) assuming that duplicates of similar compounds has the normal distribution
-  filter(sample_name %in% gas_clusall) %>%
-  pivot_wider(names_from = Compound, values_from = Percent_Area)# c(Percent_Area, Percent_Height)
-
-all_similar_compounds_PCA <- PCA(subset_filterquantile_similar[c(2:dim(subset_filterquantile_similar)[2])], 
-                                 scale.unit = TRUE, 
-                                 graph = FALSE)
-
 # Scree plot
-fviz_eig(subset_filterquantilePCA,
+fviz_eig(res.pca,
          addlabels = TRUE)
-
-fviz_pca_var(subset_filterquantilePCA, 
-             col.var = "black", 
-             select.var = list(cos2 = 20))
-
-fviz_pca_biplot(res.pca, # subset_filterquantilePCA,
-                select.var = list(cos2 = 50),# name, # list(cos2 = 140), # Top x active variables with the highest cos2
+# Biplot
+fviz_pca_biplot(res.pca,
+                select.var = list(cos2 = 50),# name, # Top x active variables with the highest cos2
                 repel = TRUE,
                 axes = c(1,2),
                 label = "ind",
@@ -342,32 +395,58 @@ fviz_pca_biplot(res.pca, # subset_filterquantilePCA,
                 # addEllipses=TRUE,
                 dpi = 480)
 
-# ggsave(paste0(getwd(), "/PCA graphs/Gasoline_station5_7_9.png"),
-#        Gasoline_station5_7_9,
-#        height = 8,
-#        width = 15)
-
-var <- get_pca_var(subset_filterquantilePCA)
+var <- get_pca_var(res.pca)
 var_coord <- var$coord
 var_contrib <- var$contrib
 
 var_cos2 <- var$cos2
-fviz_contrib(subset_filterquantilePCA, choice = "var", axes = 1:2, top = 20) + 
-  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
 corrplot(var$cos2, is.corr = FALSE)
 
-
-
 # Top variables (RT1, RT2,etc.) and compounds with highest contribution
-fviz_contrib(subset_filterquantilePCA, choice = "var", axes = 1) # contrib of var to PC
-fviz_contrib(subset_filterquantilePCA, choice = "ind", axes = 2, top = 20) + # contrib of indi to PC2
+fviz_contrib(res.pca, choice = "var", 
+             top = 1100,
+             axes = 1:2) + # contrib of var to PC
   theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
 
 
+# t-SNE clustering ------------------------------------------------------------------------------------------------
+# REFERENCES VISUALIZATION: https://plotly.com/r/t-sne-and-umap-projections/
+features <- subset(subset_filterquantile2, select = -c(sample_name))
+
+tsne <- tsne(features,initial_dims = 3, k = 3, perplexity = 10)
+             # pca = FALSE, perplexity=10, theta=0.5, dims=2,
+             # check_duplicates = FALSE)
+
+pdb <- cbind(data.frame(tsne),subset_filterquantile2$sample_name)
+options(warn = -1)
+tsne_plot <- plot_ly(data = pdb ,x =  ~X1, y = ~X2, z = ~X3, 
+               color = ~subset_filterquantile2$sample_name) %>% 
+  add_markers(size = 8) %>%
+  layout( 
+    xaxis = list(
+      zerolinecolor = "#ffff",
+      zerolinewidth = 2,
+      gridcolor='#ffff'), 
+    yaxis = list(
+      zerolinecolor = "#ffff",
+      zerolinewidth = 2,
+      gridcolor='#ffff'),
+    scene =list(bgcolor = "#e5ecf6"))
+tsne_plot
 
 
+# UMAP Clustering -------------------------------------------------------------------------------------------------
+umap <- umap(features, n_components = 3, random_state = 15)
+layout <- cbind(data.frame(umap[["layout"]]), subset_filterquantile2$sample_name)
+umap_plot <- plot_ly(layout, x = ~X1, y = ~X2, z = ~X3, 
+                color = ~subset_filterquantile2$sample_name) %>% 
+  add_markers() %>%
+  layout(scene = list(xaxis = list(title = '0'), 
+                                   yaxis = list(title = '1'), 
+                                   zaxis = list(title = '2'))) 
+umap_plot
 
-
+# REDUNDANT CODEs
 # Selecting representative Diesel compounds for each diesel sample ---------------------------------------------------------------------------
 # Get coordinates of variables
 var_coor <- get_pca_var(subset_filterquantilePCA)$coord
@@ -722,3 +801,57 @@ fviz_pca_biplot(iris_pca, repel = TRUE, label = "var",
 #        height = 8,
 #        width = 15)
 
+
+# PCA with all_similar_compounds - Worse PC percentage explained variability than imputePCA -----------------------
+# subset_filterquantile_similar <- all_similar_compounds %>%
+#   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
+#   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
+#   group_by(sample_name, Compound) %>%
+#   summarise(across(Percent_Area, mean)) %>% # c(Percent_Area, Percent_Height) assuming that duplicates of similar compounds has the normal distribution
+#   # filter(sample_name %in% gas_clusall) %>%
+#   pivot_wider(names_from = Compound, values_from = Percent_Area)# c(Percent_Area, Percent_Height)
+# 
+# all_similar_compounds_PCA <- PCA(subset_filterquantile_similar[c(2:dim(subset_filterquantile_similar)[2])], 
+#                                  scale.unit = TRUE, 
+#                                  graph = FALSE)
+# 
+# # Scree plot
+# fviz_eig(subset_filterquantilePCA,
+#          addlabels = TRUE)
+# 
+# fviz_pca_var(subset_filterquantilePCA, 
+#              col.var = "black", 
+#              select.var = list(cos2 = 20))
+# 
+# fviz_pca_biplot(all_similar_compounds_PCA,
+#                 select.var = list(cos2 = 50),# name, # list(cos2 = 140), # Top x active variables with the highest cos2
+#                 repel = TRUE,
+#                 axes = c(1,2),
+#                 label = "ind",
+#                 habillage = subset_filterquantile_similar$sample_name,
+#                 # addEllipses=TRUE,
+#                 dpi = 480)
+
+# ggsave(paste0(getwd(), "/PCA graphs/Gasoline_station5_7_9.png"),
+#        Gasoline_station5_7_9,
+#        height = 8,
+#        width = 15)
+
+
+
+# Without imputePCA function, PCA input full of NA values - REALLY BAD CLUSTERING than imputePCA ------------------
+# subset_filterquantile1 <- rownames_to_column(subset_filterquantile_removecol, "sample_name") 
+# subset_filterquantile1$sample_name <- factor(subset_filterquantile1$sample_name, 
+#                                              levels = c(unique(subset_filterquantile1$sample_name)))
+# subset_filterquantilePCA <- PCA(subset_filterquantile1[c(2:dim(subset_filterquantile1)[2])], 
+#                                 scale.unit = TRUE, 
+#                                 graph = FALSE)
+# 
+# fviz_pca_biplot(subset_filterquantilePCA,
+#                 select.var = list(cos2 = 50),# name, # list(cos2 = 140), # Top x active variables with the highest cos2
+#                 repel = TRUE,
+#                 axes = c(1,2),
+#                 label = "ind",
+#                 habillage = subset_filterquantile1$sample_name,
+#                 # addEllipses=TRUE,
+#                 dpi = 480)
