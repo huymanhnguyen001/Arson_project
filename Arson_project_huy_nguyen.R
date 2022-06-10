@@ -19,11 +19,12 @@ library(stringi)
 library(ChemoSpec) # ANOVA-PCA combo
 library(DiscriMiner) # PLS-DA combo
 library(missMDA)
-# library(tsne)
+library(tsne)
 library(Rtsne)
 library(rgl)
 library(plotly)
 library(umap)
+
 
 options(ggrepel.max.overlaps = 300)
 set.seed(12345)
@@ -152,7 +153,7 @@ df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$",
 # all_data_clean <- bind_rows(df_list_clean)
 
 
-# Label compound type based on chemical structure -----------------------------------------------------------------
+# Label compound type based on chemical structure - MAYBE IRRELEVANT -----------------------------------------------------------------
 # REGEX REFERENCES:
 # https://regenerativetoday.com/a-complete-beginners-guide-to-regular-expressions-in-r/
 # https://en.wikibooks.org/wiki/R_Programming/Text_Processing#Regular_Expressions
@@ -178,7 +179,8 @@ system.time({for (i in 1:length(df_list_clean)) {
   df <- df_list_clean[[i]] %>%
     mutate(Percent_Area = Area/sum(Area)) %>%
     mutate(Percent_Height = Height/sum(Height)) %>%
-    arrange(desc(Percent_Height), desc(Percent_Area)) # %>%
+    mutate_at("Percent_Area", funs(sort(., decreasing = TRUE))) %>% #sort descending percent_area
+    mutate_at("Percent_Height",funs(sort(., decreasing = TRUE))) # %>% #sort descending percent_height 
     # Compound column convert to rownames
     # mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", Area, "-", Height))
   
@@ -191,11 +193,11 @@ system.time({for (i in 1:length(df_list_clean)) {
       break
     }
   }
-  
+ 
   # Assign new slice df to subset_df_list 
   slice_df_list[[i]] <- new_df
   
-  # METHOD 2: BASED ON CUMULATIVE DISTRIBUTION OF AREA UNDER THE CURVE
+  # Grouping compounds based on RT1, RT2, and Ion1
 }})
 
 # Add sample_name column to each subset_df
@@ -308,40 +310,40 @@ length(unique(all_unique_compounds$Compound))
 # PCA -------------------------------------------------------------------------------------------------------------
 # Using Percent_Area and Percent_height value on compounds
 # Diesel and DieselComp cluster
-diesel_sample <- c("0220F001D.xlsx", "0220F005D.xlsx", "0220F009-2D.xlsx", "0220F009D.xlsx",
-                   "0220FDieselComp1.xlsx", "0220FDieselComp2.xlsx", "0220FDieselComp3.xlsx")
-dieselcomp_sample <- c("0220FDieselComp1.xlsx", "0220FDieselComp2.xlsx", "0220FDieselComp3.xlsx")
-
-# All gasoline
-gas_clusall <- c(
-  "0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00387.xlsx", "0220F00887.xlsx"
-  ,"0220F00189.xlsx","0220F00389.xlsx", "0220F00889.xlsx"
-  ,"0220F00191.xlsx", "0220F00391.xlsx","0220F00891.xlsx"
-  ,"0220F00894.xlsx", "0220F00587.xlsx","0220F00589.xlsx","0220F00591.xlsx",
-  "0220F00787.xlsx","0220F00789.xlsx","0220F00791.xlsx",
-  "0220F00987.xlsx", "0220F00989.xlsx", "0220F00991.xlsx"
-)
-
-# Gasoline station 1, 3, 8 cluster - cluster 1
-gas_clus1_sample <- c(
-"0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00387.xlsx", "0220F00887.xlsx"
-,"0220F00189.xlsx","0220F00389.xlsx", "0220F00889.xlsx"
-,"0220F00191.xlsx", "0220F00391.xlsx","0220F00891.xlsx"
-,"0220F00894.xlsx", 
-)
-
-# Gasoline station 5, 7, 9 cluster - cluster 2
-gas_clus2_sample <- c("0220F00587.xlsx","0220F00589.xlsx","0220F00591.xlsx",
-                       "0220F00787.xlsx","0220F00789.xlsx","0220F00791.xlsx",
-                       "0220F00987.xlsx", "0220F00989.xlsx", "0220F00991.xlsx")
-
-# Checkpoint for %Area and %Height distribution of unique compounds in all_similar_compounds
-ggplot(all_similar_compounds, aes(x = Percent_Height)) + 
-  facet_wrap(~Compound, scales = "free_y") + 
-  geom_histogram(binwidth = 0.0005) 
+# diesel_sample <- c("0220F001D.xlsx", "0220F005D.xlsx", "0220F009-2D.xlsx", "0220F009D.xlsx",
+#                    "0220FDieselComp1.xlsx", "0220FDieselComp2.xlsx", "0220FDieselComp3.xlsx")
+# dieselcomp_sample <- c("0220FDieselComp1.xlsx", "0220FDieselComp2.xlsx", "0220FDieselComp3.xlsx")
+# 
+# # All gasoline
+# gas_clusall <- c(
+#   "0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00387.xlsx", "0220F00887.xlsx"
+#   ,"0220F00189.xlsx","0220F00389.xlsx", "0220F00889.xlsx"
+#   ,"0220F00191.xlsx", "0220F00391.xlsx","0220F00891.xlsx"
+#   ,"0220F00894.xlsx", "0220F00587.xlsx","0220F00589.xlsx","0220F00591.xlsx",
+#   "0220F00787.xlsx","0220F00789.xlsx","0220F00791.xlsx",
+#   "0220F00987.xlsx", "0220F00989.xlsx", "0220F00991.xlsx"
+# )
+# 
+# # Gasoline station 1, 3, 8 cluster - cluster 1
+# gas_clus1_sample <- c(
+# "0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00387.xlsx", "0220F00887.xlsx"
+# ,"0220F00189.xlsx","0220F00389.xlsx", "0220F00889.xlsx"
+# ,"0220F00191.xlsx", "0220F00391.xlsx","0220F00891.xlsx"
+# ,"0220F00894.xlsx", 
+# )
+# 
+# # Gasoline station 5, 7, 9 cluster - cluster 2
+# gas_clus2_sample <- c("0220F00587.xlsx","0220F00589.xlsx","0220F00591.xlsx",
+#                        "0220F00787.xlsx","0220F00789.xlsx","0220F00791.xlsx",
+#                        "0220F00987.xlsx", "0220F00989.xlsx", "0220F00991.xlsx")
+# 
+# # Checkpoint for %Area and %Height distribution of unique compounds in all_similar_compounds
+# ggplot(all_similar_compounds, aes(x = Percent_Height)) + 
+#   facet_wrap(~Compound, scales = "free_y") + 
+#   geom_histogram(binwidth = 0.0005) 
 # Checkpoint Result: OK, it seems like both %Area and %Height have centralized distribution->it"s safe to calculate mean
 
-# PCA on IL cluster
+# PCA 
 subset_filterquantile_all <- all_subset_clean %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
@@ -364,8 +366,7 @@ for (col in 1:ncol(subset_filterquantile_all)) {
 subset_filterquantile_removecol <- subset(subset_filterquantile_all, select = -remove_col)
 
 # TRy imputePCA function, PCA input without NA values
-subset_filterquantilePCA_impute <- imputePCA(subset_filterquantile_removecol, 
-                                             # ncp = 2,
+subset_filterquantilePCA_impute <- imputePCA(subset_filterquantile_removecol,
                                              scale = TRUE,
                                              maxiter = 2000,
                                              method = "Regularized", #iterative approach-less overfitting
@@ -398,22 +399,34 @@ fviz_pca_biplot(res.pca,
 var <- get_pca_var(res.pca)
 var_coord <- var$coord
 var_contrib <- var$contrib
-
-var_cos2 <- var$cos2
-corrplot(var$cos2, is.corr = FALSE)
+# var_cos2 <- var$cos2
+# corrplot(var$cos2, is.corr = FALSE)
 
 # Top variables (RT1, RT2,etc.) and compounds with highest contribution
 fviz_contrib(res.pca, choice = "var", 
-             top = 1100,
-             axes = 1:2) + # contrib of var to PC
+             top = 1500,
+             axes = 1:2) + # contrib of var to PC1 and 2
   theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
 
+# Extract the top 1100 compounds contribute the most to PC1:PC2
+var_contrib_sorted <- data.frame(var_contrib) %>%
+  rownames_to_column(., var = "Compound") %>%
+  mutate_at("Dim.1", funs(sort(., decreasing = TRUE))) %>% # sort descending percent_area
+  mutate_at("Dim.2",funs(sort(., decreasing = TRUE)))
+
+var_contrib_sorted <- slice_head(df, n = 1500)
 
 # t-SNE clustering ------------------------------------------------------------------------------------------------
 # REFERENCES VISUALIZATION: https://plotly.com/r/t-sne-and-umap-projections/
-features <- subset(subset_filterquantile2, select = -c(sample_name))
-
-tsne <- tsne(features,initial_dims = 3, k = 3, perplexity = 10)
+# https://distill.pub/2016/misread-tsne/
+features <- subset(subset_filterquantile2, select = -c(sample_name)) 
+# subset_filterquantile_similar - produced dissimilar result to PCA on the same dataset
+tsne <- tsne(features,
+             initial_dims = 3, 
+             k = 3, 
+             perplexity = 15, # perplexity really should be smaller than the number of points
+             max_iter = 2000
+             )
              # pca = FALSE, perplexity=10, theta=0.5, dims=2,
              # check_duplicates = FALSE)
 
@@ -437,13 +450,14 @@ tsne_plot
 
 # UMAP Clustering -------------------------------------------------------------------------------------------------
 umap <- umap(features, n_components = 3, random_state = 15)
+
 layout <- cbind(data.frame(umap[["layout"]]), subset_filterquantile2$sample_name)
 umap_plot <- plot_ly(layout, x = ~X1, y = ~X2, z = ~X3, 
                 color = ~subset_filterquantile2$sample_name) %>% 
   add_markers() %>%
-  layout(scene = list(xaxis = list(title = '0'), 
-                                   yaxis = list(title = '1'), 
-                                   zaxis = list(title = '2'))) 
+  layout(scene = list(xaxis = list(title = 'x-axis'), 
+                                   yaxis = list(title = 'y-axis'), 
+                                   zaxis = list(title = 'z-axis'))) 
 umap_plot
 
 # REDUNDANT CODEs
@@ -803,34 +817,34 @@ fviz_pca_biplot(iris_pca, repel = TRUE, label = "var",
 
 
 # PCA with all_similar_compounds - Worse PC percentage explained variability than imputePCA -----------------------
-# subset_filterquantile_similar <- all_similar_compounds %>%
-#   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
-#   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
-#   group_by(sample_name, Compound) %>%
-#   summarise(across(Percent_Area, mean)) %>% # c(Percent_Area, Percent_Height) assuming that duplicates of similar compounds has the normal distribution
-#   # filter(sample_name %in% gas_clusall) %>%
-#   pivot_wider(names_from = Compound, values_from = Percent_Area)# c(Percent_Area, Percent_Height)
-# 
-# all_similar_compounds_PCA <- PCA(subset_filterquantile_similar[c(2:dim(subset_filterquantile_similar)[2])], 
-#                                  scale.unit = TRUE, 
-#                                  graph = FALSE)
-# 
-# # Scree plot
-# fviz_eig(subset_filterquantilePCA,
-#          addlabels = TRUE)
-# 
-# fviz_pca_var(subset_filterquantilePCA, 
-#              col.var = "black", 
-#              select.var = list(cos2 = 20))
-# 
-# fviz_pca_biplot(all_similar_compounds_PCA,
-#                 select.var = list(cos2 = 50),# name, # list(cos2 = 140), # Top x active variables with the highest cos2
-#                 repel = TRUE,
-#                 axes = c(1,2),
-#                 label = "ind",
-#                 habillage = subset_filterquantile_similar$sample_name,
-#                 # addEllipses=TRUE,
-#                 dpi = 480)
+subset_filterquantile_similar <- all_similar_compounds %>%
+  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
+  # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height
+  group_by(sample_name, Compound) %>%
+  summarise(across(Percent_Area, mean)) %>% # c(Percent_Area, Percent_Height) assuming that duplicates of similar compounds has the normal distribution
+  # filter(sample_name %in% gas_clusall) %>%
+  pivot_wider(names_from = Compound, values_from = Percent_Area)# c(Percent_Area, Percent_Height)
+
+all_similar_compounds_PCA <- PCA(subset_filterquantile_similar[c(2:dim(subset_filterquantile_similar)[2])],
+                                 scale.unit = TRUE,
+                                 graph = FALSE)
+
+# Scree plot
+fviz_eig(subset_filterquantile_similar,
+         addlabels = TRUE)
+
+fviz_pca_var(subset_filterquantile_similar,
+             col.var = "black",
+             select.var = list(cos2 = 20))
+
+fviz_pca_biplot(all_similar_compounds_PCA,
+                select.var = list(cos2 = 50),# name, # list(cos2 = 140), # Top x active variables with the highest cos2
+                repel = TRUE,
+                axes = c(1,2),
+                label = "ind",
+                habillage = subset_filterquantile_similar$sample_name,
+                # addEllipses=TRUE,
+                dpi = 480)
 
 # ggsave(paste0(getwd(), "/PCA graphs/Gasoline_station5_7_9.png"),
 #        Gasoline_station5_7_9,
