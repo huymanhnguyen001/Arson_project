@@ -22,9 +22,12 @@ library(missMDA)
 library(tsne)
 library(Rtsne)
 library(rgl)
+library(collapse)
 library(plotly)
 library(umap)
-
+library(sqldf)
+library(svMisc)
+library(multiway)
 
 options(ggrepel.max.overlaps = 300)
 set.seed(12345)
@@ -41,7 +44,7 @@ set.seed(12345)
 
 # Functions -------------------------------------------------------------------------------------------------------
 # Filtering matched compound names
-filtering <- function (data, filter_list) { #, percentile, column_list
+filtering <- function(data, filter_list) { #, percentile, column_list
   clean_data <- copy(data)
   for (ele in filter_list) {
     clean_data <- clean_data %>%
@@ -49,11 +52,12 @@ filtering <- function (data, filter_list) { #, percentile, column_list
   }
   return(clean_data)
 }
- # Notin function
+
+# Notin function
 `%notin%` <- Negate(`%in%`)
 
 # The InDaPCA function performs PCA with incomplete data -- WORSE THAN imputePCA
-InDaPCA<-function(RAWDATA){
+InDaPCA <- function(RAWDATA){
   
   #scaling
   
@@ -127,6 +131,54 @@ InDaPCA<-function(RAWDATA){
   
 }
 
+# Grouping compounds based on RT1, RT2, and Ion1
+grouping_comp <- function(data) {
+
+  # create empty list, each sub-list is a compound group with following criteria:
+  # RT1 threshold +- 0.4
+  # RT2 threshold +- 0.1
+  # Ion1 threshold +-0.1
+  
+  grouping_comp_list <- list()
+  # Initiate df to store compound grouping
+  grouping_comp_df <- data.frame(matrix(ncol = ncol(data), nrow = 0))
+  colnames(grouping_comp_df) <- colnames(data)
+  grouping_comp_df$Compound <- as.character(grouping_comp_df$Compound)
+  grouping_comp_df$sample_name <- as.character(grouping_comp_df$sample_name)
+  
+  i <- 1
+  for (row in 1:nrow(data)) {
+    progress(row) # progress.bar = TRUE
+    Sys.sleep(0.01)
+    if (row == nrow(data)) cat("Done!")
+    rt1 <- data[row,]$RT1
+    rt2 <- data[row,]$RT2
+    ion1 <- data[row,]$`Ion 1`
+    subset <- data %>%
+      # RT1 threshold +- 0.4
+      filter(RT1 < (rt1 + 0.4) & RT1 > (rt1 - 0.4) 
+             &
+               RT2 < (rt2 + 0.1) & RT2 > (rt2 - 0.1)
+             &
+               `Ion 1` < (ion1 + 0.1) & `Ion 1` > (ion1 - 0.1))
+    
+    unmatched_row <- suppressWarnings(suppressMessages(anti_join(subset, 
+                                                                 grouping_comp_df)))
+    unmatched_row <- unmatched_row %>%
+      arrange(desc(Percent_Area))
+    if (dim(unmatched_row)[1] < 1) { # if no mismatch found then next row
+      next
+    }
+    else {
+      grouping_comp_list[[i]] <- unmatched_row
+      
+      grouping_comp_df <- bind_rows(grouping_comp_df, unmatched_row, .id = NULL)
+      i <- i + 1
+    }
+  }
+  return(grouping_comp_list)
+}
+
 # Data import --------------------------------------------
 file_list <- list.files(pattern = '*.xlsx')
 
@@ -141,7 +193,6 @@ indi_IL_file_list <- file_list %>%
 df_list <- map(indi_IL_file_list, read_excel, sheet = 'Results')
 
 # Filtering out column bleed and solvent --------------------------------------
-
 df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$", 
                                                                  "^Benzene$", 
                                                                  "Cyclotrisiloxane..hexamethyl",
@@ -149,9 +200,6 @@ df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$",
                                                                  "^Toluene$",
                                                                  "^Ethylbenzene$",
                                                                  "Xylene")) 
-
-# all_data_clean <- bind_rows(df_list_clean)
-
 
 # Label compound type based on chemical structure - MAYBE IRRELEVANT -----------------------------------------------------------------
 # REGEX REFERENCES:
@@ -179,8 +227,8 @@ system.time({for (i in 1:length(df_list_clean)) {
   df <- df_list_clean[[i]] %>%
     mutate(Percent_Area = Area/sum(Area)) %>%
     mutate(Percent_Height = Height/sum(Height)) %>%
-    mutate_at("Percent_Area", funs(sort(., decreasing = TRUE))) %>% #sort descending percent_area
-    mutate_at("Percent_Height",funs(sort(., decreasing = TRUE))) # %>% #sort descending percent_height 
+    mutate_at("Percent_Area", sort(., decreasing = TRUE)) %>% #sort descending percent_area
+    mutate_at("Percent_Height",sort(., decreasing = TRUE)) # %>% #sort descending percent_height 
     # Compound column convert to rownames
     # mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", Area, "-", Height))
   
@@ -196,8 +244,6 @@ system.time({for (i in 1:length(df_list_clean)) {
  
   # Assign new slice df to subset_df_list 
   slice_df_list[[i]] <- new_df
-  
-  # Grouping compounds based on RT1, RT2, and Ion1
 }})
 
 # Add sample_name column to each subset_df
@@ -218,6 +264,30 @@ for (i in 1:length(slice_df_list)) {
 # Combine all subset_df together
 
 all_subset_clean <- bind_rows(slice_df_list) 
+all_subset_clean_grouping_comp <- grouping_comp(all_subset_clean)
+View(all_subset_clean_grouping_comp[[1800]])
+View(all_subset_clean_grouping_comp[[2000]])
+View(all_subset_clean_grouping_comp[[3000]])
+
+hist_plot <- list()
+for (i in length(all_subset_clean_grouping_comp)) {
+  hist_plot[[i]] <- hist(all_subset_clean_grouping_comp[[i]]$Percent_Area, xlab = NULL, ylab = NULL)
+}
+
+y <- textGrob("Frequency", rot = 90, gp = gpar(fontsize = 10))
+x <- textGrob("Percent_Area", gp = gpar(fontsize = 10))
+grid.arrange(grobs = hist_plot, ncol = 4, left = y, bottom = x)
+
+#--------------------------------------------------------------------------------------
+# 28 out of 28 gasoline samples share 25 common compounds
+# more than 15 out of 28 gasoline samples share 96 common compounds
+# 5 out of 5 diesel samples share 50 common compounds
+# more than 15 out of 39 IL samples share 150 common compounds
+
+length(unique(all_different_compounds$Compound))
+# 963 compounds unique for 5 diesel compounds
+
+# examine the cumulative peak height and peak area per sample of compounds found across 39 samples
 
 
 # Similar Compounds (high % area & height) found across samples ------------------------------------------------
@@ -236,7 +306,7 @@ all_different_compounds$sample_name <- as.character(all_different_compounds$samp
 
 system.time({for (compound_name in unique(all_subset_clean$Compound)) { #all_subset_clean
   # https://ashleytinsleyaileen.blogspot.com/2020/05/syntax-error-in-regexp-pattern.html?msclkid=7e2f2593d15b11ecbf9464b31d04ea64
-
+  
   # Filter 1: baseR::grepl 
   slice_df1 <- all_subset_clean[which(grepl(compound_name, all_subset_clean$Compound, fixed = TRUE)),]
   
@@ -272,18 +342,6 @@ length(unique(all_similar_compounds$Compound))
 
 
 
-#--------------------------------------------------------------------------------------
-# 28 out of 28 gasoline samples share 25 common compounds
-# more than 15 out of 28 gasoline samples share 96 common compounds
-# 5 out of 5 diesel samples share 50 common compounds
-# more than 15 out of 39 IL samples share 150 common compounds
-
-length(unique(all_different_compounds$Compound))
-# 963 compounds unique for 5 diesel compounds
-
-# examine the cumulative peak height and peak area per sample of compounds found across 39 samples
-
-
 # OPTIONAL:: Filtering unique compound for each sample -----------------------------------------------------------------------
 all_unique_compounds <- data.frame(matrix(ncol = ncol(all_different_compounds), nrow = 0))
 colnames(all_unique_compounds) <- colnames(all_different_compounds)
@@ -308,42 +366,6 @@ length(unique(all_unique_compounds$Compound))
 
 
 # PCA -------------------------------------------------------------------------------------------------------------
-# Using Percent_Area and Percent_height value on compounds
-# Diesel and DieselComp cluster
-# diesel_sample <- c("0220F001D.xlsx", "0220F005D.xlsx", "0220F009-2D.xlsx", "0220F009D.xlsx",
-#                    "0220FDieselComp1.xlsx", "0220FDieselComp2.xlsx", "0220FDieselComp3.xlsx")
-# dieselcomp_sample <- c("0220FDieselComp1.xlsx", "0220FDieselComp2.xlsx", "0220FDieselComp3.xlsx")
-# 
-# # All gasoline
-# gas_clusall <- c(
-#   "0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00387.xlsx", "0220F00887.xlsx"
-#   ,"0220F00189.xlsx","0220F00389.xlsx", "0220F00889.xlsx"
-#   ,"0220F00191.xlsx", "0220F00391.xlsx","0220F00891.xlsx"
-#   ,"0220F00894.xlsx", "0220F00587.xlsx","0220F00589.xlsx","0220F00591.xlsx",
-#   "0220F00787.xlsx","0220F00789.xlsx","0220F00791.xlsx",
-#   "0220F00987.xlsx", "0220F00989.xlsx", "0220F00991.xlsx"
-# )
-# 
-# # Gasoline station 1, 3, 8 cluster - cluster 1
-# gas_clus1_sample <- c(
-# "0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00387.xlsx", "0220F00887.xlsx"
-# ,"0220F00189.xlsx","0220F00389.xlsx", "0220F00889.xlsx"
-# ,"0220F00191.xlsx", "0220F00391.xlsx","0220F00891.xlsx"
-# ,"0220F00894.xlsx", 
-# )
-# 
-# # Gasoline station 5, 7, 9 cluster - cluster 2
-# gas_clus2_sample <- c("0220F00587.xlsx","0220F00589.xlsx","0220F00591.xlsx",
-#                        "0220F00787.xlsx","0220F00789.xlsx","0220F00791.xlsx",
-#                        "0220F00987.xlsx", "0220F00989.xlsx", "0220F00991.xlsx")
-# 
-# # Checkpoint for %Area and %Height distribution of unique compounds in all_similar_compounds
-# ggplot(all_similar_compounds, aes(x = Percent_Height)) + 
-#   facet_wrap(~Compound, scales = "free_y") + 
-#   geom_histogram(binwidth = 0.0005) 
-# Checkpoint Result: OK, it seems like both %Area and %Height have centralized distribution->it"s safe to calculate mean
-
-# PCA 
 subset_filterquantile_all <- all_subset_clean %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
@@ -689,7 +711,40 @@ ggsave(paste0(getwd(), "/PCA graphs/sample_0220F00889_influencer.png"),
 
 
 # PCA --------------------------------------------------------------------
-
+# Using Percent_Area and Percent_height value on compounds
+# Diesel and DieselComp cluster
+# diesel_sample <- c("0220F001D.xlsx", "0220F005D.xlsx", "0220F009-2D.xlsx", "0220F009D.xlsx",
+#                    "0220FDieselComp1.xlsx", "0220FDieselComp2.xlsx", "0220FDieselComp3.xlsx")
+# dieselcomp_sample <- c("0220FDieselComp1.xlsx", "0220FDieselComp2.xlsx", "0220FDieselComp3.xlsx")
+# 
+# # All gasoline
+# gas_clusall <- c(
+#   "0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00387.xlsx", "0220F00887.xlsx"
+#   ,"0220F00189.xlsx","0220F00389.xlsx", "0220F00889.xlsx"
+#   ,"0220F00191.xlsx", "0220F00391.xlsx","0220F00891.xlsx"
+#   ,"0220F00894.xlsx", "0220F00587.xlsx","0220F00589.xlsx","0220F00591.xlsx",
+#   "0220F00787.xlsx","0220F00789.xlsx","0220F00791.xlsx",
+#   "0220F00987.xlsx", "0220F00989.xlsx", "0220F00991.xlsx"
+# )
+# 
+# # Gasoline station 1, 3, 8 cluster - cluster 1
+# gas_clus1_sample <- c(
+# "0220F00187-2.xlsx","0220F00187-3.xlsx","0220F00187.xlsx","0220F00387.xlsx", "0220F00887.xlsx"
+# ,"0220F00189.xlsx","0220F00389.xlsx", "0220F00889.xlsx"
+# ,"0220F00191.xlsx", "0220F00391.xlsx","0220F00891.xlsx"
+# ,"0220F00894.xlsx", 
+# )
+# 
+# # Gasoline station 5, 7, 9 cluster - cluster 2
+# gas_clus2_sample <- c("0220F00587.xlsx","0220F00589.xlsx","0220F00591.xlsx",
+#                        "0220F00787.xlsx","0220F00789.xlsx","0220F00791.xlsx",
+#                        "0220F00987.xlsx", "0220F00989.xlsx", "0220F00991.xlsx")
+# 
+# # Checkpoint for %Area and %Height distribution of unique compounds in all_similar_compounds
+# ggplot(all_similar_compounds, aes(x = Percent_Height)) + 
+#   facet_wrap(~Compound, scales = "free_y") + 
+#   geom_histogram(binwidth = 0.0005) 
+# Checkpoint Result: OK, it seems like both %Area and %Height have centralized distribution->it"s safe to calculate mean
 # Individual IL files
 # Data frame for sorting percent_area & percent_height from highest to lowest
 for (i in 1:length(df_list_clean)) {
