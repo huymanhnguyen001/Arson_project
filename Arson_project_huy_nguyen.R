@@ -28,9 +28,15 @@ library(umap)
 library(sqldf)
 library(svMisc)
 library(multiway)
+library(foreach)
+library(doSNOW)
+library(writexl)
+library(rapportools)
 
 options(ggrepel.max.overlaps = 300)
 set.seed(12345)
+cl <- makeCluster(8, type = "SOCK")
+registerDoSNOW(cl)
 # Analysis Progress -------------------------------------------------------
 # fail to appropriately pivot_wider: each column should be name of compound and each row will be
 # the measurement of that compount, such as MF, RMF, RT1, RT2, Area %, Height, Ion 1, Ion 2, etc.
@@ -139,44 +145,30 @@ grouping_comp <- function(data) {
   # RT2 threshold +- 0.1
   # Ion1 threshold +-0.1
   
-  grouping_comp_list <- list()
-  # Initiate df to store compound grouping
-  grouping_comp_df <- data.frame(matrix(ncol = ncol(data), nrow = 0))
-  colnames(grouping_comp_df) <- colnames(data)
-  grouping_comp_df$Compound <- as.character(grouping_comp_df$Compound)
-  grouping_comp_df$sample_name <- as.character(grouping_comp_df$sample_name)
-  
+  # Initialize the compound_group column filled with NA values
+  data$compound_group <- NA
   i <- 1
   for (row in 1:nrow(data)) {
-    progress(row) # progress.bar = TRUE
-    Sys.sleep(0.01)
-    if (row == nrow(data)) cat("Done!")
+    # filter data by index, ALWAYS DO THIS INSTEAD OF CREATE SUBSET DATAFRAME
     rt1 <- data[row,]$RT1
     rt2 <- data[row,]$RT2
     ion1 <- data[row,]$`Ion 1`
-    subset <- data %>%
-      # RT1 threshold +- 0.4
-      filter(RT1 < (rt1 + 0.4) & RT1 > (rt1 - 0.4) 
-             &
-               RT2 < (rt2 + 0.1) & RT2 > (rt2 - 0.1)
-             &
-               `Ion 1` < (ion1 + 0.1) & `Ion 1` > (ion1 - 0.1))
-    
-    unmatched_row <- suppressWarnings(suppressMessages(anti_join(subset, 
-                                                                 grouping_comp_df)))
-    unmatched_row <- unmatched_row %>%
-      arrange(desc(Percent_Area))
-    if (dim(unmatched_row)[1] < 1) { # if no mismatch found then next row
+    idx <- which(data$RT1 < (rt1 + 0.4) & data$RT1 > (rt1 - 0.4) & 
+                 data$RT2 < (rt2 + 0.1) & data$RT2 > (rt2 - 0.1) & 
+                 data$`Ion 1` < (ion1 + 0.1) & data$`Ion 1` > (ion1 - 0.1) & 
+                 is.na(data$compound_group))
+    if (identical(idx, integer(0))) {
       next
     }
     else {
-      grouping_comp_list[[i]] <- unmatched_row
-      
-      grouping_comp_df <- bind_rows(grouping_comp_df, unmatched_row, .id = NULL)
-      i <- i + 1
+      data[idx, "compound_group"] <- paste0("Compound_", i)
     }
+    rm(rt1)
+    rm(rt2)
+    rm(ion1)
+    i <- i + 1
   }
-  return(grouping_comp_list)
+  return(data)
 }
 
 # Data import --------------------------------------------
@@ -187,10 +179,11 @@ indi_IL_file_list <- file_list %>%
   # .[str_detect(., "D")]  %>%
   # .[str_detect(., "DieselComp")] %>%
   # .[str_detect(., "GasComp")] %>%
-  .[!str_ends(., "check.xlsx")]
+  .[!str_ends(., "check.xlsx")] %>%
+  .[!str_detect(., "grouping_compounds")]
 
 # Import IL samples to list
-df_list <- map(indi_IL_file_list, read_excel, sheet = 'Results')
+df_list <- map(indi_IL_file_list, read_excel, sheet = "Results")
 
 # Filtering out column bleed and solvent --------------------------------------
 df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$", 
@@ -227,8 +220,12 @@ system.time({for (i in 1:length(df_list_clean)) {
   df <- df_list_clean[[i]] %>%
     mutate(Percent_Area = Area/sum(Area)) %>%
     mutate(Percent_Height = Height/sum(Height)) %>%
-    mutate_at("Percent_Area", sort(., decreasing = TRUE)) %>% #sort descending percent_area
-    mutate_at("Percent_Height",sort(., decreasing = TRUE)) # %>% #sort descending percent_height 
+    # summarise(across(Percent_Area, sort, decreasing = TRUE))
+    mutate(Percent_Area = across(Percent_Area, sort, decreasing = TRUE)) %>%
+    mutate(Percent_Height = across(Percent_Height, sort, decreasing = TRUE))
+    # arrange(desc(Percent_Area), desc(Percent_Height), MF)
+    # mutate_at("Percent_Area", .funs(sort(., decreasing = TRUE))) %>% #sort descending percent_area
+    # mutate_at("Percent_Height", .funs(sort(., decreasing = TRUE))) # %>% #sort descending percent_height 
     # Compound column convert to rownames
     # mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", Area, "-", Height))
   
@@ -263,20 +260,39 @@ for (i in 1:length(slice_df_list)) {
 
 # Combine all subset_df together
 
-all_subset_clean <- bind_rows(slice_df_list) 
-all_subset_clean_grouping_comp <- grouping_comp(all_subset_clean)
-View(all_subset_clean_grouping_comp[[1800]])
-View(all_subset_clean_grouping_comp[[2000]])
-View(all_subset_clean_grouping_comp[[3000]])
+all_subset_clean <- bind_rows(slice_df_list)
+all_subset_clean$Percent_Area <- as.double(unlist(all_subset_clean$Percent_Area))
+all_subset_clean$Percent_Height <- as.double(unlist(all_subset_clean$Percent_Height))
 
-hist_plot <- list()
-for (i in length(all_subset_clean_grouping_comp)) {
-  hist_plot[[i]] <- hist(all_subset_clean_grouping_comp[[i]]$Percent_Area, xlab = NULL, ylab = NULL)
-}
+# Grouping copounds based on RT1, RT2, Ion1 -----------------------------------------------------------------------
+all_subset_clean_grouped <- grouping_comp(all_subset_clean)
 
-y <- textGrob("Frequency", rot = 90, gp = gpar(fontsize = 10))
-x <- textGrob("Percent_Area", gp = gpar(fontsize = 10))
-grid.arrange(grobs = hist_plot, ncol = 4, left = y, bottom = x)
+# Export df for later use
+write_xlsx(all_subset_clean_grouped, paste0(getwd(), "/grouping_compounds.xlsx"))
+# testing_import <- read_excel(paste0(getwd(), "/grouping_compounds.xlsx"))
+
+# Investigate distribution of Percent Area of compound groups
+# subset <- all_subset_clean_grouped %>%
+#   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
+#   mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
+#   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
+#   group_by(sample_name, compound_group) %>%
+#   # Here we collapse the duplicates compound by calculate the mean of Percent Area,
+#   # assuming that duplicates of similar compounds has the normal distribution
+#   summarise(across(c(Percent_Area, RT1, RT2), mean))
+# 
+# ggplot(data = subset, aes(x = Percent_Area)) +
+#   facet_wrap(~sample_name, scales = "free_y") + 
+#   geom_histogram(bins = 25)
+
+# hist_plot <- list()
+# for (sample in unique(subset$sample_name)) {
+#   hist_plot[[i]] <- hist(filter(subset[[i]]$Percent_Area, xlab = NULL, ylab = NULL)
+# }
+# 
+# y <- textGrob("Frequency", rot = 90, gp = gpar(fontsize = 10))
+# x <- textGrob("Percent_Area", gp = gpar(fontsize = 10))
+# grid.arrange(grobs = hist_plot, ncol = 4, left = y, bottom = x)
 
 #--------------------------------------------------------------------------------------
 # 28 out of 28 gasoline samples share 25 common compounds
@@ -291,97 +307,107 @@ length(unique(all_different_compounds$Compound))
 
 
 # Similar Compounds (high % area & height) found across samples ------------------------------------------------
-# Similar compound from IL samples
-all_similar_compounds <- data.frame(matrix(ncol = ncol(all_subset_clean), nrow = 0)) #all_gasoline_subset_clean_1st_filter
-colnames(all_similar_compounds) <- colnames(all_subset_clean)
-all_similar_compounds$Compound <- as.character(all_similar_compounds$Compound)
-all_similar_compounds$sample_name <- as.character(all_similar_compounds$sample_name)
-# all_subset_clean_1st_filter$sample_type <- as.character(all_subset_clean_1st_filter$sample_type)
+# Approach 1: Using compound "groups" by RT1, RT2, Ion1 Threshold
+all_similar_compounds_idx1 <- c()
+all_different_compounds_idx1 <- c()
+all_unique_compounds_idx1 <- c()
 
-# Distinctive compound for IL samples
-all_different_compounds <- data.frame(matrix(ncol = ncol(all_subset_clean), nrow = 0)) #unique_gasoline_subset
-colnames(all_different_compounds) <- colnames(all_subset_clean)
-all_different_compounds$Compound <- as.character(all_different_compounds$Compound)
-all_different_compounds$sample_name <- as.character(all_different_compounds$sample_name)
-
-system.time({for (compound_name in unique(all_subset_clean$Compound)) { #all_subset_clean
-  # https://ashleytinsleyaileen.blogspot.com/2020/05/syntax-error-in-regexp-pattern.html?msclkid=7e2f2593d15b11ecbf9464b31d04ea64
+system.time({for (comp_grp in unique(all_subset_clean_grouped$compound_group)) {
+  # filter data by index, ALWAYS DO THIS INSTEAD OF CREATE SUBSET DATAFRAME
   
-  # Filter 1: baseR::grepl 
-  slice_df1 <- all_subset_clean[which(grepl(compound_name, all_subset_clean$Compound, fixed = TRUE)),]
+  idx <- which(grepl(paste0("^", comp_grp, "$"), all_subset_clean_grouped$compound_group))
   
-  # !!! --> If try() produces error, then next iteration in for loop
-  if (class(try(which(grepl(paste0("^", compound_name, "$"), all_subset_clean$Compound)), silent = TRUE)) %in% "try-error") {
-    # put weird compound names in unique subset
-    all_different_compounds <- bind_rows(all_different_compounds, slice_df1, .id = NULL)
-    next
-  } 
-  # Filter 2: stringr::str_which
-  else {
-    slice_df2 <- slice_df1[which(grepl(paste0("^", compound_name, "$"), slice_df1$Compound)),]
+  if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
+    all_similar_compounds_idx1 <- c(all_similar_compounds_idx1, idx)
   }
-  rm(slice_df1)
-  rm(compound_name)
-  # if compound was found in another sample, then append it to new dataframe: all_subset_clean_similar
-  if (length(unique(slice_df2$sample_name)) > (length(indi_IL_file_list) - 1)) {
-    # append the remove slice_df to all_subset_clean_similar
-    all_similar_compounds <- bind_rows(all_similar_compounds, slice_df2, .id = NULL)
+  else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
+    all_unique_compounds_idx1 <- c(all_unique_compounds_idx1, idx)
   }
   else {
-    all_different_compounds <- bind_rows(all_different_compounds, slice_df2, .id = NULL)
+    all_different_compounds_idx1 <- c(all_different_compounds_idx1, idx)
   }
-  rm(slice_df2)
 }})
 
-length(unique(all_similar_compounds$Compound))
+# Approach 2: Using original compound name
+all_similar_compounds_idx2 <- c()
+all_different_compounds_idx2 <- c()
+all_unique_compounds_idx2 <- c()
+
+system.time({for (com in unique(all_subset_clean_grouped$Compound)) {
+  # https://ashleytinsleyaileen.blogspot.com/2020/05/syntax-error-in-regexp-pattern.html?msclkid=7e2f2593d15b11ecbf9464b31d04ea64
+  
+  # Filter 1: for the weird compound names
+  if (class(try(which(grepl(paste0("^", com, "$"), all_subset_clean_grouped$Compound)), silent = TRUE)) %in% "try-error") {
+    idx <- which(grepl(com, all_subset_clean_grouped$Compound, fixed = TRUE))
+    if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
+      # append the remove slice_df to all_subset_clean_similar
+      all_similar_compounds_idx2 <- c(all_similar_compounds_idx2, idx)
+    }
+    else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
+      all_unique_compounds_idx2 <- c(all_unique_compounds_idx2, idx)
+    }
+    else {
+      all_different_compounds_idx2 <- c(all_different_compounds_idx2, idx)
+    }
+  }
+  else {
+    if (identical(which(grepl(paste0("^", com, "$"), all_subset_clean_grouped$Compound)), integer(0))) {
+      idx <- which(grepl(com, all_subset_clean_grouped$Compound, fixed = TRUE))
+      if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
+        # append the remove slice_df to all_subset_clean_similar
+        all_similar_compounds_idx2 <- c(all_similar_compounds_idx2, idx)
+      }
+      else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
+        all_unique_compounds_idx2 <- c(all_unique_compounds_idx2, idx)
+      }
+      else {
+        all_different_compounds_idx2 <- c(all_different_compounds_idx2, idx)
+      }
+    }
+    else {
+      # Filter 2: for regular compound names
+      idx <- which(grepl(paste0("^", com, "$"), all_subset_clean_grouped$Compound))
+      if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
+        # append the remove slice_df to all_subset_clean_similar
+        all_similar_compounds_idx2 <- c(all_similar_compounds_idx2, idx)
+      }
+      else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
+        all_unique_compounds_idx2 <- c(all_unique_compounds_idx2, idx)
+      }
+      else {
+        all_different_compounds_idx2 <- c(all_different_compounds_idx2, idx)
+      }
+    }
+  }
+}})
+
 # When include 99% of cumulative peak height, all diesel samples share 304 compounds in common
 # When include 99% of cumulative peak height, all gasoline samples share 39 compounds in common
 # When include 99% of cumulative peak height, all diesel composite samples share 357 compounds in common
 # When include 99% of cumulative peak height, all gasoline composite samples share 248 compounds in common
-# When include 99% of cumulative peak height, all IL samples share 29 compounds in common
-
-
-
-# OPTIONAL:: Filtering unique compound for each sample -----------------------------------------------------------------------
-all_unique_compounds <- data.frame(matrix(ncol = ncol(all_different_compounds), nrow = 0))
-colnames(all_unique_compounds) <- colnames(all_different_compounds)
-all_unique_compounds$Compound <- as.character(all_unique_compounds$Compound)
-all_unique_compounds$sample_name <- as.character(all_unique_compounds$sample_name)
-
-system.time({
-  for (compound_name in unique(all_different_compounds$Compound)) {
-    slice_df <- all_different_compounds[which(grepl(compound_name, all_different_compounds$Compound, fixed = TRUE)),]
-    if (length(unique(slice_df$sample_name)) < 2) {
-      # append the remove slice_df to all_subset_clean_similar
-      all_unique_compounds <- bind_rows(all_unique_compounds, slice_df, .id = NULL)
-    } 
-  }
-}) 
-
-length(unique(all_unique_compounds$Compound))
-# 832 compounds unique for  gasoline compounds
-
-
+# When include 99% of cumulative peak height, all IL samples share 29(22) compounds in common
+# After grouping compounds based on RT1, RT2, Ion1 threshold, all 31 IL samples share 13 compound "groups" in common 
 
 
 
 # PCA -------------------------------------------------------------------------------------------------------------
-subset_filterquantile_all <- all_subset_clean %>%
+subset_filterquantile_all <- all_subset_clean_grouped %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
+  mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
-  group_by(sample_name, Compound) %>%
+  group_by(sample_name, compound_group) %>%
   # Here we collapse the duplicates compound by calculate the mean of Percent Area,
   # assuming that duplicates of similar compounds has the normal distribution
-  summarise(across(Percent_Area, mean)) %>% 
+  summarise(across(Percent_Area, median)) %>% 
   # filter(sample_name %in% gas_clus2_sample) %>%
-  pivot_wider(names_from = Compound, values_from = Percent_Area) %>% # c(Percent_Area, Percent_Height)
-  column_to_rownames(., var = "sample_name")
+  pivot_wider(names_from = compound_group, values_from = Percent_Area) %>% # c(Percent_Area, Percent_Height)
+  column_to_rownames(., var = "sample_name") # must do before input in imputePCA()
 
 # remove columns that has less than 5 unique values, including NA as a unique value
 # Aka. we remove compounds that exist in less than 3 samples ("lower bound compound filter")
 remove_col <- c()
 for (col in 1:ncol(subset_filterquantile_all)) {
-  if (length(unique(subset_filterquantile_all[,col])) < 4) {
+  if (length(unique(subset_filterquantile_all[,col])) < 8) {
     remove_col <- c(remove_col, col)
   }
 }
@@ -394,6 +420,7 @@ subset_filterquantilePCA_impute <- imputePCA(subset_filterquantile_removecol,
                                              method = "Regularized", #iterative approach-less overfitting
                                              seed = 651)
 
+# For plotting biplot later-------------------------------
 subset_filterquantile2 <- rownames_to_column(data.frame(subset_filterquantilePCA_impute$completeObs),
                                              "sample_name")
 
@@ -401,22 +428,62 @@ subset_filterquantile2 <- subset_filterquantile2 %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
   # %>% filter(sample_name %in% gas_clusall)
 
-res.pca <- PCA(subset_filterquantile2[c(2:dim(subset_filterquantile2)[2])], 
+pca_input <- data.frame(subset_filterquantilePCA_impute$completeObs)
+res.pca <- PCA(pca_input, # subset_filterquantile2[c(2:dim(subset_filterquantile2)[2])]
                scale.unit = TRUE, 
                graph = FALSE)
 
 # Scree plot
-fviz_eig(res.pca,
-         addlabels = TRUE)
+# fviz_eig(res.pca,
+         # addlabels = TRUE)
 # Biplot
 fviz_pca_biplot(res.pca,
-                select.var = list(cos2 = 50),# name, # Top x active variables with the highest cos2
+                select.var = list(cos2 = 5),# name, # Top x active variables with the highest cos2
                 repel = TRUE,
                 axes = c(1,2),
                 label = "ind",
                 habillage = subset_filterquantile2$sample_name,
                 # addEllipses=TRUE,
                 dpi = 480)
+
+# Hierarchical Clustering on Principle Components
+hcpc <- HCPC(res.pca, nb.clust = -1)
+
+# PCA Regression
+library(caret)
+subset_filterquantile2$lab_enc <- ifelse(str_detect(subset_filterquantile2$sample_name, "DieselCom"), 1, 
+                                         ifelse(str_detect(subset_filterquantile2$sample_name, "GasComp"), 2,
+                                                ifelse(str_detect(subset_filterquantile2$sample_name, "D"), 3, 4)))
+
+subset_filterquantile2 <- subset_filterquantile2 %>%
+  relocate(lab_enc, .before = 2)
+  
+# Partitioning data set 
+classification_data <- subset(subset_filterquantile2, select = -c(sample_name))
+inTraining <- createDataPartition(classification_data$lab_enc,
+                                  p = .60, list = FALSE)
+training <- classification_data[inTraining,]
+testing  <- classification_data[-inTraining,]
+
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+
+model <- train(lab_enc~.,
+               data = training,
+               method = "pls", # "lm", pls", "lasso", rf"
+               preProcess = c("center", "scale", "pca"),
+               trControl = ctrl)
+
+plot(model)
+
+test.features <- subset(testing, select = -c(lab_enc))
+test.target <- subset(testing, select = lab_enc)[,1]
+
+predictions <- predict(model, newdata = test.features)
+cor(test.target, predictions) ^ 2
+
 
 var <- get_pca_var(res.pca)
 var_coord <- var$coord
@@ -446,7 +513,7 @@ features <- subset(subset_filterquantile2, select = -c(sample_name))
 tsne <- tsne(features,
              initial_dims = 3, 
              k = 3, 
-             perplexity = 15, # perplexity really should be smaller than the number of points
+             perplexity = 15, # Hyperparameter: perplexity < number of data points
              max_iter = 2000
              )
              # pca = FALSE, perplexity=10, theta=0.5, dims=2,
@@ -924,3 +991,63 @@ fviz_pca_biplot(all_similar_compounds_PCA,
 #                 habillage = subset_filterquantile1$sample_name,
 #                 # addEllipses=TRUE,
 #                 dpi = 480)
+
+
+
+# Reserve code ----------------------------------------------------------------------------------------------------
+all_similar_compounds <- data.frame(matrix(ncol = ncol(all_subset_clean), nrow = 0))
+colnames(all_similar_compounds) <- colnames(all_subset_clean)
+all_similar_compounds$Compound <- as.character(all_similar_compounds$Compound)
+all_similar_compounds$sample_name <- as.character(all_similar_compounds$sample_name)
+
+all_different_compounds <- data.frame(matrix(ncol = ncol(all_subset_clean), nrow = 0))
+colnames(all_different_compounds) <- colnames(all_subset_clean)
+all_different_compounds$Compound <- as.character(all_different_compounds$Compound)
+all_different_compounds$sample_name <- as.character(all_different_compounds$sample_name)
+
+system.time({for (compound_name in unique(all_subset_clean$Compound)) { #all_subset_clean
+  # https://ashleytinsleyaileen.blogspot.com/2020/05/syntax-error-in-regexp-pattern.html?msclkid=7e2f2593d15b11ecbf9464b31d04ea64
+  
+  # Filter 1: baseR::grepl 
+  slice_df1 <- all_subset_clean[which(grepl(compound_name, all_subset_clean$Compound, fixed = TRUE)),]
+  
+  # !!! --> If try() produces error, then next iteration in for loop
+  if (class(try(which(grepl(paste0("^", compound_name, "$"), all_subset_clean$Compound)), silent = TRUE)) %in% "try-error") {
+    # put weird compound names in unique subset
+    all_different_compounds <- bind_rows(all_different_compounds, slice_df1, .id = NULL)
+    next
+  } 
+  # Filter 2: stringr::str_which
+  else {
+    slice_df2 <- slice_df1[which(grepl(paste0("^", compound_name, "$"), slice_df1$Compound)),]
+  }
+  rm(slice_df1)
+  rm(compound_name)
+  # if compound was found in another sample, then append it to new dataframe: all_subset_clean_similar
+  if (length(unique(slice_df2$sample_name)) > (length(indi_IL_file_list) - 1)) {
+    # append the remove slice_df to all_subset_clean_similar
+    all_similar_compounds <- bind_rows(all_similar_compounds, slice_df2, .id = NULL)
+  }
+  else {
+    all_different_compounds <- bind_rows(all_different_compounds, slice_df2, .id = NULL)
+  }
+  rm(slice_df2)
+}})
+
+all_unique_compounds <- data.frame(matrix(ncol = ncol(all_different_compounds), nrow = 0))
+colnames(all_unique_compounds) <- colnames(all_different_compounds)
+all_unique_compounds$Compound <- as.character(all_unique_compounds$Compound)
+all_unique_compounds$sample_name <- as.character(all_unique_compounds$sample_name)
+
+system.time({
+  for (compound_name in unique(all_different_compounds$Compound)) {
+    slice_df <- all_different_compounds[which(grepl(compound_name, all_different_compounds$Compound, fixed = TRUE)),]
+    if (length(unique(slice_df$sample_name)) < 2) {
+      # append the remove slice_df to all_subset_clean_similar
+      all_unique_compounds <- bind_rows(all_unique_compounds, slice_df, .id = NULL)
+    } 
+  }
+}) 
+
+length(unique(all_similar_compounds$Compound))
+length(unique(all_unique_compounds$Compound))
