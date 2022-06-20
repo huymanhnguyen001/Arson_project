@@ -32,7 +32,7 @@ library(foreach)
 library(doSNOW)
 library(writexl)
 library(rapportools)
-
+vignette("parallel")
 options(ggrepel.max.overlaps = 300)
 set.seed(12345)
 cl <- makeCluster(8, type = "SOCK")
@@ -171,6 +171,30 @@ grouping_comp <- function(data) {
   return(data)
 }
 
+# Filtering similar and unique compound
+comp_filter <- function(data, file_list) {
+  all_similar_compounds_idx <- c()
+  all_different_compounds_idx <- c()
+  all_unique_compounds_idx <- c()
+  
+  for (comp_grp in unique(data$compound_group)) {
+    # filter data by index, ALWAYS DO THIS INSTEAD OF CREATE SUBSET DATAFRAME
+    
+    idx <- which(grepl(paste0("^", comp_grp, "$"), data$compound_group))
+    
+    if (length(unique(data[idx,]$sample_name)) > (length(file_list) - 1)) {
+      all_similar_compounds_idx <- c(all_similar_compounds_idx, idx)
+    }
+    else if (length(unique(data[idx,]$sample_name)) < 2) {
+      all_unique_compounds_idx <- c(all_unique_compounds_idx, idx)
+    }
+    else {
+      all_different_compounds_idx <- c(all_different_compounds_idx, idx)
+    }
+  }
+  return(list(all_similar_compounds_idx, all_different_compounds_idx, all_unique_compounds_idx))
+}
+
 # Data import --------------------------------------------
 file_list <- list.files(pattern = '*.xlsx')
 
@@ -194,116 +218,43 @@ df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$",
                                                                  "^Ethylbenzene$",
                                                                  "Xylene")) 
 
-# Label compound type based on chemical structure - MAYBE IRRELEVANT -----------------------------------------------------------------
-# REGEX REFERENCES:
-# https://regenerativetoday.com/a-complete-beginners-guide-to-regular-expressions-in-r/
-# https://en.wikibooks.org/wiki/R_Programming/Text_Processing#Regular_Expressions
-# https://towardsdatascience.com/a-gentle-introduction-to-regular-expressions-with-r-df5e897ca432
 
-# test1 <- df_list_clean[[1]] %>%
-#   select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3"))) %>%
-#   mutate(compound_type = ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo", # ignore.case -> case insensitive
-#                                 ifelse(grepl("bromo", Compound),"bromo",
-#                                        ifelse(grepl("chloro", Compound, ignore.case = TRUE),"chloro",
-#                                               ifelse(grepl("phospho", Compound),"phospho",
-#                                                      ifelse(grepl("sulf", Compound),"sulfur",
-#                                                             ifelse(grepl("amin", Compound),"amine",
-#                                                                    ifelse(grepl("naphthal", Compound),"naphthalene",
-#                                                                           ifelse(grepl("Benze", Compound), "benzene", "others")))))))))
-
-
-# Iterative loop sub-setting data based on cumulative sum(Percent_Height): cumulative sum(Percent_Height)  --------
-# subset_df_list <- list()
-slice_df_list <- list() # subset_df_list
+# Iterative loop sub-setting data based on cumulative sum(Percent_Height)  --------
+slice_df_list <- list() 
 
 system.time({for (i in 1:length(df_list_clean)) { 
   df <- df_list_clean[[i]] %>%
     mutate(Percent_Area = Area/sum(Area)) %>%
     mutate(Percent_Height = Height/sum(Height)) %>%
-    # summarise(across(Percent_Area, sort, decreasing = TRUE))
-    mutate(Percent_Area = across(Percent_Area, sort, decreasing = TRUE)) %>%
-    mutate(Percent_Height = across(Percent_Height, sort, decreasing = TRUE))
-    # arrange(desc(Percent_Area), desc(Percent_Height), MF)
-    # mutate_at("Percent_Area", .funs(sort(., decreasing = TRUE))) %>% #sort descending percent_area
-    # mutate_at("Percent_Height", .funs(sort(., decreasing = TRUE))) # %>% #sort descending percent_height 
-    # Compound column convert to rownames
-    # mutate(Compound = paste(Compound, "-", MF, "-", RMF, "-", Area, "-", Height))
+    transmute(rowwise(.), Percent_Area = sort(c_across(Percent_Area), decreasing = TRUE)) %>%
+    transmute(rowwise(.), Percent_Height = sort(c_across(Percent_Height), decreasing = TRUE))
   
-  
-  # # subset data based on the largest number of iteration
+  # subset data based on the largest number of iteration
   for (row_num in 1:nrow(df)) {
-    # slice data based on condition of cumulative sum of percent_height, limit ~ 80%
+    # slice data based on condition of cumulative sum of percent_height
     if (sum(df[1:row_num,]$Percent_Height) > 0.99) {
       new_df <- slice_head(df, n = row_num)
       break
     }
   }
  
-  # Assign new slice df to subset_df_list 
-  slice_df_list[[i]] <- new_df
+  # Add sample_name column 
+  slice_df_list[[i]] <- new_df %>%
+    mutate(sample_name = indi_IL_file_list[[i]]) %>%
+    mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp",
+                              ifelse(str_detect(sample_name, "GasComp"), "GasComp",
+                                     ifelse(str_detect(sample_name, "D"), "Diesel", "Gas"))))
 }})
 
-# Add sample_name column to each subset_df
-
-for (i in 1:length(slice_df_list)) {
-  slice_df_list[[i]] <- slice_df_list[[i]] %>%
-    group_by(Compound) %>% 
-    mutate(sample_name = indi_IL_file_list[[i]])
-}
-
-# Export gasoline subset to csv file ------------------------------------------------------------------------------
-
-# for (i in 1:length(subset_df_list)) {
-#   write.csv(subset_df_list[[i]], file = paste0("C:/Users/huyng/Desktop/",
-#                                                         diesel_file_list[[i]], ".csv"))
-# }
-
+# Grouping compounds based on RT1, RT2, Ion1 -----------------------------------------------------------------------
 # Combine all subset_df together
-
 all_subset_clean <- bind_rows(slice_df_list)
-all_subset_clean$Percent_Area <- as.double(unlist(all_subset_clean$Percent_Area))
-all_subset_clean$Percent_Height <- as.double(unlist(all_subset_clean$Percent_Height))
 
-# Grouping copounds based on RT1, RT2, Ion1 -----------------------------------------------------------------------
 all_subset_clean_grouped <- grouping_comp(all_subset_clean)
 
 # Export df for later use
-write_xlsx(all_subset_clean_grouped, paste0(getwd(), "/grouping_compounds.xlsx"))
+write_xlsx(all_subset_clean_grouped, paste0(getwd(), "/grouping_compounds_200622.xlsx"))
 # testing_import <- read_excel(paste0(getwd(), "/grouping_compounds.xlsx"))
-
-# Investigate distribution of Percent Area of compound groups
-# subset <- all_subset_clean_grouped %>%
-#   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
-#   mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
-#   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
-#   group_by(sample_name, compound_group) %>%
-#   # Here we collapse the duplicates compound by calculate the mean of Percent Area,
-#   # assuming that duplicates of similar compounds has the normal distribution
-#   summarise(across(c(Percent_Area, RT1, RT2), mean))
-# 
-# ggplot(data = subset, aes(x = Percent_Area)) +
-#   facet_wrap(~sample_name, scales = "free_y") + 
-#   geom_histogram(bins = 25)
-
-# hist_plot <- list()
-# for (sample in unique(subset$sample_name)) {
-#   hist_plot[[i]] <- hist(filter(subset[[i]]$Percent_Area, xlab = NULL, ylab = NULL)
-# }
-# 
-# y <- textGrob("Frequency", rot = 90, gp = gpar(fontsize = 10))
-# x <- textGrob("Percent_Area", gp = gpar(fontsize = 10))
-# grid.arrange(grobs = hist_plot, ncol = 4, left = y, bottom = x)
-
-#--------------------------------------------------------------------------------------
-# 28 out of 28 gasoline samples share 25 common compounds
-# more than 15 out of 28 gasoline samples share 96 common compounds
-# 5 out of 5 diesel samples share 50 common compounds
-# more than 15 out of 39 IL samples share 150 common compounds
-
-length(unique(all_different_compounds$Compound))
-# 963 compounds unique for 5 diesel compounds
-
-# examine the cumulative peak height and peak area per sample of compounds found across 39 samples
 
 
 # Similar Compounds (high % area & height) found across samples ------------------------------------------------
@@ -328,70 +279,103 @@ system.time({for (comp_grp in unique(all_subset_clean_grouped$compound_group)) {
   }
 }})
 
-# Approach 2: Using original compound name
-all_similar_compounds_idx2 <- c()
-all_different_compounds_idx2 <- c()
-all_unique_compounds_idx2 <- c()
+similar_compounds <- all_subset_clean_grouped[all_similar_compounds_idx1,]
+other_compounds <- all_subset_clean_grouped[all_different_compounds_idx1,]
+unique_compounds <- all_subset_clean_grouped[all_unique_compounds_idx1,]
 
-system.time({for (com in unique(all_subset_clean_grouped$Compound)) {
-  # https://ashleytinsleyaileen.blogspot.com/2020/05/syntax-error-in-regexp-pattern.html?msclkid=7e2f2593d15b11ecbf9464b31d04ea64
-  
-  # Filter 1: for the weird compound names
-  if (class(try(which(grepl(paste0("^", com, "$"), all_subset_clean_grouped$Compound)), silent = TRUE)) %in% "try-error") {
-    idx <- which(grepl(com, all_subset_clean_grouped$Compound, fixed = TRUE))
-    if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
-      # append the remove slice_df to all_subset_clean_similar
-      all_similar_compounds_idx2 <- c(all_similar_compounds_idx2, idx)
-    }
-    else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
-      all_unique_compounds_idx2 <- c(all_unique_compounds_idx2, idx)
-    }
-    else {
-      all_different_compounds_idx2 <- c(all_different_compounds_idx2, idx)
-    }
-  }
-  else {
-    if (identical(which(grepl(paste0("^", com, "$"), all_subset_clean_grouped$Compound)), integer(0))) {
-      idx <- which(grepl(com, all_subset_clean_grouped$Compound, fixed = TRUE))
-      if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
-        # append the remove slice_df to all_subset_clean_similar
-        all_similar_compounds_idx2 <- c(all_similar_compounds_idx2, idx)
-      }
-      else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
-        all_unique_compounds_idx2 <- c(all_unique_compounds_idx2, idx)
-      }
-      else {
-        all_different_compounds_idx2 <- c(all_different_compounds_idx2, idx)
-      }
-    }
-    else {
-      # Filter 2: for regular compound names
-      idx <- which(grepl(paste0("^", com, "$"), all_subset_clean_grouped$Compound))
-      if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
-        # append the remove slice_df to all_subset_clean_similar
-        all_similar_compounds_idx2 <- c(all_similar_compounds_idx2, idx)
-      }
-      else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
-        all_unique_compounds_idx2 <- c(all_unique_compounds_idx2, idx)
-      }
-      else {
-        all_different_compounds_idx2 <- c(all_different_compounds_idx2, idx)
-      }
-    }
-  }
-}})
+# # Faster if statement
+# library(data.table)
+# DT <- data.table(z)
+# DT[, id:=.I]
+# 
+# DT[, cond1:=V2!=min(V2), by=V1]
+
+# Approach 2: Using original compound name
+# all_similar_compounds_idx2 <- c()
+# all_different_compounds_idx2 <- c()
+# all_unique_compounds_idx2 <- c()
+# 
+# system.time({for (com in unique(all_subset_clean_grouped$Compound)) {
+#   # https://ashleytinsleyaileen.blogspot.com/2020/05/syntax-error-in-regexp-pattern.html?msclkid=7e2f2593d15b11ecbf9464b31d04ea64
+#   
+#   # Filter 1: for the weird compound names
+#   if (class(try(which(grepl(paste0("^", com, "$"), all_subset_clean_grouped$Compound)), silent = TRUE)) %in% "try-error") {
+#     idx <- which(grepl(com, all_subset_clean_grouped$Compound, fixed = TRUE))
+#     if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
+#       # append the remove slice_df to all_subset_clean_similar
+#       all_similar_compounds_idx2 <- c(all_similar_compounds_idx2, idx)
+#     }
+#     else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
+#       all_unique_compounds_idx2 <- c(all_unique_compounds_idx2, idx)
+#     }
+#     else {
+#       all_different_compounds_idx2 <- c(all_different_compounds_idx2, idx)
+#     }
+#   }
+#   else {
+#     if (identical(which(grepl(paste0("^", com, "$"), all_subset_clean_grouped$Compound)), integer(0))) {
+#       idx <- which(grepl(com, all_subset_clean_grouped$Compound, fixed = TRUE))
+#       if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
+#         # append the remove slice_df to all_subset_clean_similar
+#         all_similar_compounds_idx2 <- c(all_similar_compounds_idx2, idx)
+#       }
+#       else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
+#         all_unique_compounds_idx2 <- c(all_unique_compounds_idx2, idx)
+#       }
+#       else {
+#         all_different_compounds_idx2 <- c(all_different_compounds_idx2, idx)
+#       }
+#     }
+#     else {
+#       # Filter 2: for regular compound names
+#       idx <- which(grepl(paste0("^", com, "$"), all_subset_clean_grouped$Compound))
+#       if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
+#         # append the remove slice_df to all_subset_clean_similar
+#         all_similar_compounds_idx2 <- c(all_similar_compounds_idx2, idx)
+#       }
+#       else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
+#         all_unique_compounds_idx2 <- c(all_unique_compounds_idx2, idx)
+#       }
+#       else {
+#         all_different_compounds_idx2 <- c(all_different_compounds_idx2, idx)
+#       }
+#     }
+#   }
+# }})
 
 # When include 99% of cumulative peak height, all diesel samples share 304 compounds in common
 # When include 99% of cumulative peak height, all gasoline samples share 39 compounds in common
 # When include 99% of cumulative peak height, all diesel composite samples share 357 compounds in common
 # When include 99% of cumulative peak height, all gasoline composite samples share 248 compounds in common
-# When include 99% of cumulative peak height, all IL samples share 29(22) compounds in common
+# When include 99% of cumulative peak height, all IL samples share 29(22, 13) compounds in common
 # After grouping compounds based on RT1, RT2, Ion1 threshold, all 31 IL samples share 13 compound "groups" in common 
+
+
+# Data Summary ----------------------------------------------------------------------------------------------------
+# Distribution of %Area of each compound_group --> histogram plot
+ggplot(data = similar_compounds, aes(x = Percent_Area)) +
+  facet_wrap(~compound_group, scales = "free_y") +
+  geom_histogram(bins = 50)
+
+# Distribution of RT1, RT2, Ion1 --> Data.table
+summarydata <- similar_compounds %>%
+  group_by(fuel_type, compound_group) %>%
+  summarise(
+    n = n(compound_group)
+            )
+
+# Distribution of compound in different fuel types
+ggplot(data = similar_compounds, aes(x = compound_group)) +
+  facet_wrap(~fuel_type, scales = "fixed") +
+  geom_bar() +
+  theme(axis.text.x = element_text(angle = 90))
+
+# Distribution of Compound frequency in similar_compound -> Frequency bar plot
 
 
 
 # PCA -------------------------------------------------------------------------------------------------------------
-subset_filterquantile_all <- all_subset_clean_grouped %>%
+pcasubset <- similar_compounds %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
   mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
@@ -406,50 +390,66 @@ subset_filterquantile_all <- all_subset_clean_grouped %>%
 # remove columns that has less than 5 unique values, including NA as a unique value
 # Aka. we remove compounds that exist in less than 3 samples ("lower bound compound filter")
 remove_col <- c()
-for (col in 1:ncol(subset_filterquantile_all)) {
-  if (length(unique(subset_filterquantile_all[,col])) < 8) {
+for (col in 1:ncol(pcasubset)) {
+  if (length(unique(pcasubset[,col])) < 8) {
     remove_col <- c(remove_col, col)
   }
 }
-subset_filterquantile_removecol <- subset(subset_filterquantile_all, select = -remove_col)
+
+pcasubset_removecol <- subset(pcasubset, select = -remove_col)
 
 # TRy imputePCA function, PCA input without NA values
-subset_filterquantilePCA_impute <- imputePCA(subset_filterquantile_removecol,
-                                             scale = TRUE,
-                                             maxiter = 2000,
-                                             method = "Regularized", #iterative approach-less overfitting
-                                             seed = 651)
+PCA_impute <- imputePCA(pcasubset_removecol,
+                        scale = TRUE,
+                        maxiter = 2000,
+                        method = "Regularized", #iterative approach-less overfitting
+                        seed = 651)
 
 # For plotting biplot later-------------------------------
-subset_filterquantile2 <- rownames_to_column(data.frame(subset_filterquantilePCA_impute$completeObs),
+subset2 <- rownames_to_column(data.frame(PCA_impute$completeObs),
                                              "sample_name")
 
-subset_filterquantile2 <- subset_filterquantile2 %>%
+subset_filterquantile2 <- subset2 %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
   # %>% filter(sample_name %in% gas_clusall)
 
-pca_input <- data.frame(subset_filterquantilePCA_impute$completeObs)
-res.pca <- PCA(pca_input, # subset_filterquantile2[c(2:dim(subset_filterquantile2)[2])]
+pca_input <- data.frame(PCA_impute$completeObs)
+res.pca <- PCA(pcasubset, 
                scale.unit = TRUE, 
                graph = FALSE)
 
 # Scree plot
-# fviz_eig(res.pca,
-         # addlabels = TRUE)
+fviz_eig(res.pca,
+         addlabels = TRUE)
 # Biplot
 fviz_pca_biplot(res.pca,
                 select.var = list(cos2 = 5),# name, # Top x active variables with the highest cos2
                 repel = TRUE,
                 axes = c(1,2),
                 label = "ind",
-                habillage = subset_filterquantile2$sample_name,
+                habillage = pcasubset$sample_name,
                 # addEllipses=TRUE,
                 dpi = 480)
+
+# Top variables (RT1, RT2,etc.) and compounds with highest contribution
+fviz_contrib(res.pca, choice = "var",
+             top = 1500,
+             axes = 1:2) + # contrib of var to PC1 and 2
+  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
+
+# Extract the top 1100 compounds contribute the most to PC1:PC2
+var_contrib_sorted <- data.frame(var_contrib) %>%
+  rownames_to_column(., var = "Compound") %>%
+  mutate_at("Dim.1", funs(sort(., decreasing = TRUE))) %>% # sort descending percent_area
+  mutate_at("Dim.2",funs(sort(., decreasing = TRUE)))
+
+var_contrib_sorted <- slice_head(df, n = 1500)
 
 # Hierarchical Clustering on Principle Components
 hcpc <- HCPC(res.pca, nb.clust = -1)
 
-# PCA Regression
+
+# Regression Classification PCR/PLS-DA, etc. ----------------------------------------------------------------------
 library(caret)
 subset_filterquantile2$lab_enc <- ifelse(str_detect(subset_filterquantile2$sample_name, "DieselCom"), 1, 
                                          ifelse(str_detect(subset_filterquantile2$sample_name, "GasComp"), 2,
@@ -491,24 +491,11 @@ var_contrib <- var$contrib
 # var_cos2 <- var$cos2
 # corrplot(var$cos2, is.corr = FALSE)
 
-# Top variables (RT1, RT2,etc.) and compounds with highest contribution
-fviz_contrib(res.pca, choice = "var", 
-             top = 1500,
-             axes = 1:2) + # contrib of var to PC1 and 2
-  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
-
-# Extract the top 1100 compounds contribute the most to PC1:PC2
-var_contrib_sorted <- data.frame(var_contrib) %>%
-  rownames_to_column(., var = "Compound") %>%
-  mutate_at("Dim.1", funs(sort(., decreasing = TRUE))) %>% # sort descending percent_area
-  mutate_at("Dim.2",funs(sort(., decreasing = TRUE)))
-
-var_contrib_sorted <- slice_head(df, n = 1500)
 
 # t-SNE clustering ------------------------------------------------------------------------------------------------
 # REFERENCES VISUALIZATION: https://plotly.com/r/t-sne-and-umap-projections/
 # https://distill.pub/2016/misread-tsne/
-features <- subset(subset_filterquantile2, select = -c(sample_name)) 
+features <- subset(pcasubset, select = -c(sample_name)) 
 # subset_filterquantile_similar - produced dissimilar result to PCA on the same dataset
 tsne <- tsne(features,
              initial_dims = 3, 
@@ -519,10 +506,10 @@ tsne <- tsne(features,
              # pca = FALSE, perplexity=10, theta=0.5, dims=2,
              # check_duplicates = FALSE)
 
-pdb <- cbind(data.frame(tsne),subset_filterquantile2$sample_name)
+pdb <- cbind(data.frame(tsne),pcasubset$sample_name)
 options(warn = -1)
 tsne_plot <- plot_ly(data = pdb ,x =  ~X1, y = ~X2, z = ~X3, 
-               color = ~subset_filterquantile2$sample_name) %>% 
+               color = ~pcasubset$sample_name) %>% 
   add_markers(size = 8) %>%
   layout( 
     xaxis = list(
@@ -540,9 +527,9 @@ tsne_plot
 # UMAP Clustering -------------------------------------------------------------------------------------------------
 umap <- umap(features, n_components = 3, random_state = 15)
 
-layout <- cbind(data.frame(umap[["layout"]]), subset_filterquantile2$sample_name)
+layout <- cbind(data.frame(umap[["layout"]]), pcasubset$sample_name)
 umap_plot <- plot_ly(layout, x = ~X1, y = ~X2, z = ~X3, 
-                color = ~subset_filterquantile2$sample_name) %>% 
+                color = ~pcasubset$sample_name) %>% 
   add_markers() %>%
   layout(scene = list(xaxis = list(title = 'x-axis'), 
                                    yaxis = list(title = 'y-axis'), 
@@ -1051,3 +1038,29 @@ system.time({
 
 length(unique(all_similar_compounds$Compound))
 length(unique(all_unique_compounds$Compound))
+# Label compound type based on chemical structure - MAYBE IRRELEVANT -----------------------------------------------------------------
+# REGEX REFERENCES:
+# https://regenerativetoday.com/a-complete-beginners-guide-to-regular-expressions-in-r/
+# https://en.wikibooks.org/wiki/R_Programming/Text_Processing#Regular_Expressions
+# https://towardsdatascience.com/a-gentle-introduction-to-regular-expressions-with-r-df5e897ca432
+
+# test1 <- df_list_clean[[1]] %>%
+#   select(-ends_with(c("Area %", "Ion 1", "Ion 2", "Ion 3"))) %>%
+#   mutate(compound_type = ifelse(grepl("cyclo", Compound, ignore.case = TRUE),"cyclo", # ignore.case -> case insensitive
+#                                 ifelse(grepl("bromo", Compound),"bromo",
+#                                        ifelse(grepl("chloro", Compound, ignore.case = TRUE),"chloro",
+#                                               ifelse(grepl("phospho", Compound),"phospho",
+#                                                      ifelse(grepl("sulf", Compound),"sulfur",
+#                                                             ifelse(grepl("amin", Compound),"amine",
+#                                                                    ifelse(grepl("naphthal", Compound),"naphthalene",
+#                                                                           ifelse(grepl("Benze", Compound), "benzene", "others")))))))))
+
+
+#--------------------------------------------------------------------------------------
+# 28 out of 28 gasoline samples share 25 common compounds
+# more than 15 out of 28 gasoline samples share 96 common compounds
+# 5 out of 5 diesel samples share 50 common compounds
+# more than 15 out of 39 IL samples share 150 common compounds
+# 963 compounds unique for 5 diesel compounds
+
+# examine the cumulative peak height and peak area per sample of compounds found across 39 samples
