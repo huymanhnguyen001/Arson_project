@@ -32,7 +32,7 @@ library(foreach)
 library(doSNOW)
 library(writexl)
 library(rapportools)
-vignette("parallel")
+# vignette("parallel")
 options(ggrepel.max.overlaps = 300)
 set.seed(12345)
 cl <- makeCluster(8, type = "SOCK")
@@ -154,7 +154,7 @@ grouping_comp <- function(data) {
     rt2 <- data[row,]$RT2
     ion1 <- data[row,]$`Ion 1`
     idx <- which(data$RT1 < (rt1 + 0.4) & data$RT1 > (rt1 - 0.4) & 
-                 data$RT2 < (rt2 + 0.1) & data$RT2 > (rt2 - 0.1) & 
+                 data$RT2 < (rt2 + 0.125) & data$RT2 > (rt2 - 0.125) & 
                  data$`Ion 1` < (ion1 + 0.1) & data$`Ion 1` > (ion1 - 0.1) & 
                  is.na(data$compound_group))
     if (identical(idx, integer(0))) {
@@ -162,11 +162,11 @@ grouping_comp <- function(data) {
     }
     else {
       data[idx, "compound_group"] <- paste0("Compound_", i)
+      i <- i + 1
     }
     rm(rt1)
     rm(rt2)
     rm(ion1)
-    i <- i + 1
   }
   return(data)
 }
@@ -174,7 +174,7 @@ grouping_comp <- function(data) {
 # Filtering similar and unique compound
 comp_filter <- function(data, file_list) {
   all_similar_compounds_idx <- c()
-  all_different_compounds_idx <- c()
+  all_other_compounds_idx <- c()
   all_unique_compounds_idx <- c()
   
   for (comp_grp in unique(data$compound_group)) {
@@ -189,10 +189,10 @@ comp_filter <- function(data, file_list) {
       all_unique_compounds_idx <- c(all_unique_compounds_idx, idx)
     }
     else {
-      all_different_compounds_idx <- c(all_different_compounds_idx, idx)
+      all_other_compounds_idx <- c(all_other_compounds_idx, idx)
     }
   }
-  return(list(all_similar_compounds_idx, all_different_compounds_idx, all_unique_compounds_idx))
+  return(list(all_similar_compounds_idx, all_other_compounds_idx, all_unique_compounds_idx))
 }
 
 # Data import --------------------------------------------
@@ -226,13 +226,15 @@ system.time({for (i in 1:length(df_list_clean)) {
   df <- df_list_clean[[i]] %>%
     mutate(Percent_Area = Area/sum(Area)) %>%
     mutate(Percent_Height = Height/sum(Height)) %>%
-    transmute(rowwise(.), Percent_Area = sort(c_across(Percent_Area), decreasing = TRUE)) %>%
-    transmute(rowwise(.), Percent_Height = sort(c_across(Percent_Height), decreasing = TRUE))
-  
+    arrange(desc(Percent_Area)) # Percent_Height / Percent_Area
+    # transmute(rowwise(.), Percent_Area = sort(c_across(Percent_Area), decreasing = TRUE)) %>%
+    # transmute(rowwise(.), Percent_Height = sort(c_across(Percent_Height), decreasing = TRUE))
+    
+    
   # subset data based on the largest number of iteration
   for (row_num in 1:nrow(df)) {
     # slice data based on condition of cumulative sum of percent_height
-    if (sum(df[1:row_num,]$Percent_Height) > 0.99) {
+    if (sum(df[1:row_num,]$Percent_Area) > 0.99) { # Percent_Height / Percent_Area
       new_df <- slice_head(df, n = row_num)
       break
     }
@@ -250,38 +252,37 @@ system.time({for (i in 1:length(df_list_clean)) {
 # Combine all subset_df together
 all_subset_clean <- bind_rows(slice_df_list)
 
+# anti_join(data, all_subset_clean_grouped)
+
 all_subset_clean_grouped <- grouping_comp(all_subset_clean)
 
 # Export df for later use
-write_xlsx(all_subset_clean_grouped, paste0(getwd(), "/grouping_compounds_200622.xlsx"))
+write_xlsx(all_subset_clean_grouped, paste0(getwd(), "/grouping_compounds_210622_byPercent_area.xlsx"))
 # testing_import <- read_excel(paste0(getwd(), "/grouping_compounds.xlsx"))
-
 
 # Similar Compounds (high % area & height) found across samples ------------------------------------------------
 # Approach 1: Using compound "groups" by RT1, RT2, Ion1 Threshold
-all_similar_compounds_idx1 <- c()
-all_different_compounds_idx1 <- c()
-all_unique_compounds_idx1 <- c()
+idx_list <- comp_filter(all_subset_clean_grouped, indi_IL_file_list)
 
-system.time({for (comp_grp in unique(all_subset_clean_grouped$compound_group)) {
-  # filter data by index, ALWAYS DO THIS INSTEAD OF CREATE SUBSET DATAFRAME
-  
-  idx <- which(grepl(paste0("^", comp_grp, "$"), all_subset_clean_grouped$compound_group))
-  
-  if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
-    all_similar_compounds_idx1 <- c(all_similar_compounds_idx1, idx)
-  }
-  else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
-    all_unique_compounds_idx1 <- c(all_unique_compounds_idx1, idx)
-  }
-  else {
-    all_different_compounds_idx1 <- c(all_different_compounds_idx1, idx)
-  }
-}})
+# system.time({for (comp_grp in unique(all_subset_clean_grouped$compound_group)) {
+#   # filter data by index, ALWAYS DO THIS INSTEAD OF CREATE SUBSET DATAFRAME
+#   
+#   idx <- which(grepl(paste0("^", comp_grp, "$"), all_subset_clean_grouped$compound_group))
+#   
+#   if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) > (length(indi_IL_file_list) - 1)) {
+#     all_similar_compounds_idx1 <- c(all_similar_compounds_idx1, idx)
+#   }
+#   else if (length(unique(all_subset_clean_grouped[idx,]$sample_name)) < 2) {
+#     all_unique_compounds_idx1 <- c(all_unique_compounds_idx1, idx)
+#   }
+#   else {
+#     all_different_compounds_idx1 <- c(all_different_compounds_idx1, idx)
+#   }
+# }})
 
-similar_compounds <- all_subset_clean_grouped[all_similar_compounds_idx1,]
-other_compounds <- all_subset_clean_grouped[all_different_compounds_idx1,]
-unique_compounds <- all_subset_clean_grouped[all_unique_compounds_idx1,]
+similar_compounds <- all_subset_clean_grouped[idx_list[[1]],]
+other_compounds <- all_subset_clean_grouped[idx_list[[2]],]
+unique_compounds <- all_subset_clean_grouped[idx_list[[3]],]
 
 # # Faster if statement
 # library(data.table)
@@ -351,31 +352,35 @@ unique_compounds <- all_subset_clean_grouped[all_unique_compounds_idx1,]
 # After grouping compounds based on RT1, RT2, Ion1 threshold, all 31 IL samples share 13 compound "groups" in common 
 
 
-# Data Summary ----------------------------------------------------------------------------------------------------
+
+# Data Summary after Compound Grouping ----------------------------------------------------------------------------------------------------
 # Distribution of %Area of each compound_group --> histogram plot
 ggplot(data = similar_compounds, aes(x = Percent_Area)) +
   facet_wrap(~compound_group, scales = "free_y") +
   geom_histogram(bins = 50)
 
-# Distribution of RT1, RT2, Ion1 --> Data.table
-summarydata <- similar_compounds %>%
-  group_by(fuel_type, compound_group) %>%
+# Distribution of RT1, RT2, Ion1
+summarydata1 <- similar_compounds %>%
+  group_by(fuel_type, compound_group, sample_name) %>%
   summarise(
-    n = n(compound_group)
+    RT1 = as.double(unlist(across(RT1, mean))),
+    RT2 = as.double(unlist(across(RT2, mean))),
+    `Ion 1` = as.double(unlist(across(`Ion 1`, mean))),
+    Percent_Area = as.double(unlist(across(Percent_Area, mean))) #,
+    # n = n(compound_group)
             )
 
-# Distribution of compound in different fuel types
-ggplot(data = similar_compounds, aes(x = compound_group)) +
-  facet_wrap(~fuel_type, scales = "fixed") +
-  geom_bar() +
-  theme(axis.text.x = element_text(angle = 90))
+# Distribution of compound in different compound_group
+summarydata2 <- similar_compounds %>%
+  group_by(compound_group, Compound, fuel_type) %>%
+  summarise(count = n(Compound)) 
 
 # Distribution of Compound frequency in similar_compound -> Frequency bar plot
 
 
 
 # PCA -------------------------------------------------------------------------------------------------------------
-pcasubset <- similar_compounds %>%
+pcasubset <- data %>% # all_subset_clean_grouped / similar_compounds
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
   mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
@@ -388,10 +393,10 @@ pcasubset <- similar_compounds %>%
   column_to_rownames(., var = "sample_name") # must do before input in imputePCA()
 
 # remove columns that has less than 5 unique values, including NA as a unique value
-# Aka. we remove compounds that exist in less than 3 samples ("lower bound compound filter")
+# Aka. we remove compounds that exist in less than x samples ("lower bound compound filter")
 remove_col <- c()
 for (col in 1:ncol(pcasubset)) {
-  if (length(unique(pcasubset[,col])) < 8) {
+  if (length(unique(pcasubset[,col])) < 4) {
     remove_col <- c(remove_col, col)
   }
 }
@@ -403,18 +408,20 @@ PCA_impute <- imputePCA(pcasubset_removecol,
                         scale = TRUE,
                         maxiter = 2000,
                         method = "Regularized", #iterative approach-less overfitting
-                        seed = 651)
+                        seed = 123)
 
-# For plotting biplot later-------------------------------
+# For plotting biplot later
 subset2 <- rownames_to_column(data.frame(PCA_impute$completeObs),
                                              "sample_name")
 
-subset_filterquantile2 <- subset2 %>%
+subset2 <- subset2 %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
   # %>% filter(sample_name %in% gas_clusall)
 
+# PCA section
 pca_input <- data.frame(PCA_impute$completeObs)
-res.pca <- PCA(pcasubset, 
+
+res.pca <- PCA(pca_input,  #  pca_input / pcasubset
                scale.unit = TRUE, 
                graph = FALSE)
 
@@ -427,9 +434,9 @@ fviz_pca_biplot(res.pca,
                 repel = TRUE,
                 axes = c(1,2),
                 label = "ind",
-                habillage = pcasubset$sample_name,
+                habillage = subset2$sample_name, #  subset2 / pcasubset
                 # addEllipses=TRUE,
-                dpi = 480)
+                dpi = 900)
 
 # Top variables (RT1, RT2,etc.) and compounds with highest contribution
 fviz_contrib(res.pca, choice = "var",
@@ -437,7 +444,7 @@ fviz_contrib(res.pca, choice = "var",
              axes = 1:2) + # contrib of var to PC1 and 2
   theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
 
-# Extract the top 1100 compounds contribute the most to PC1:PC2
+##### Extract the top 1100 compounds contribute the most to PC1:PC2
 var_contrib_sorted <- data.frame(var_contrib) %>%
   rownames_to_column(., var = "Compound") %>%
   mutate_at("Dim.1", funs(sort(., decreasing = TRUE))) %>% # sort descending percent_area
@@ -450,12 +457,13 @@ hcpc <- HCPC(res.pca, nb.clust = -1)
 
 
 # Regression Classification PCR/PLS-DA, etc. ----------------------------------------------------------------------
+# NEED MORE DATA TO TRAIN CLASSIFICATION
 library(caret)
-subset_filterquantile2$lab_enc <- ifelse(str_detect(subset_filterquantile2$sample_name, "DieselCom"), 1, 
-                                         ifelse(str_detect(subset_filterquantile2$sample_name, "GasComp"), 2,
-                                                ifelse(str_detect(subset_filterquantile2$sample_name, "D"), 3, 4)))
-
-subset_filterquantile2 <- subset_filterquantile2 %>%
+subset2$lab_enc <- ifelse(str_detect(subset2$sample_name, "DieselCom"), 1, 
+                                         ifelse(str_detect(subset2$sample_name, "GasComp"), 2,
+                                                ifelse(str_detect(subset2$sample_name, "D"), 3, 4)))
+# move label to the front of df
+subset2 <- subset2 %>%
   relocate(lab_enc, .before = 2)
   
 # Partitioning data set 
@@ -495,7 +503,7 @@ var_contrib <- var$contrib
 # t-SNE clustering ------------------------------------------------------------------------------------------------
 # REFERENCES VISUALIZATION: https://plotly.com/r/t-sne-and-umap-projections/
 # https://distill.pub/2016/misread-tsne/
-features <- subset(pcasubset, select = -c(sample_name)) 
+features <- subset(subset2, select = -c(sample_name)) # pcasubset
 # subset_filterquantile_similar - produced dissimilar result to PCA on the same dataset
 tsne <- tsne(features,
              initial_dims = 3, 
@@ -506,10 +514,10 @@ tsne <- tsne(features,
              # pca = FALSE, perplexity=10, theta=0.5, dims=2,
              # check_duplicates = FALSE)
 
-pdb <- cbind(data.frame(tsne),pcasubset$sample_name)
+pdb <- cbind(data.frame(tsne),subset2$sample_name)
 options(warn = -1)
 tsne_plot <- plot_ly(data = pdb ,x =  ~X1, y = ~X2, z = ~X3, 
-               color = ~pcasubset$sample_name) %>% 
+               color = ~subset2$sample_name) %>% 
   add_markers(size = 8) %>%
   layout( 
     xaxis = list(
@@ -527,9 +535,9 @@ tsne_plot
 # UMAP Clustering -------------------------------------------------------------------------------------------------
 umap <- umap(features, n_components = 3, random_state = 15)
 
-layout <- cbind(data.frame(umap[["layout"]]), pcasubset$sample_name)
+layout <- cbind(data.frame(umap[["layout"]]), subset2$sample_name)
 umap_plot <- plot_ly(layout, x = ~X1, y = ~X2, z = ~X3, 
-                color = ~pcasubset$sample_name) %>% 
+                color = ~subset2$sample_name) %>% 
   add_markers() %>%
   layout(scene = list(xaxis = list(title = 'x-axis'), 
                                    yaxis = list(title = 'y-axis'), 
