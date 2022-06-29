@@ -32,6 +32,15 @@ library(foreach)
 library(doSNOW)
 library(writexl)
 library(rapportools)
+library(randomForest)
+library(e1071)
+library(gbm)
+library(fitdistrplus)
+library(RcppML)
+library(CAMERA)
+library(NMF)
+library(Boruta)
+source("RUVRand.R")
 
 # vignette("parallel")
 options(ggrepel.max.overlaps = 300)
@@ -162,7 +171,7 @@ grouping_comp <- function(data) {
       next
     }
     else {
-      data[idx, "compound_group"] <- paste0("Compound_", i)
+      data[idx, "compound_group"] <- paste0("Compound_", i, ".")
       i <- i + 1
     }
     rm(rt1)
@@ -196,6 +205,43 @@ comp_filter <- function(data, file_list) {
   return(list(all_similar_compounds_idx, all_other_compounds_idx, all_unique_compounds_idx))
 }
 
+# Probabilistic Quotient Normalization
+pqn <- function(X, n = "median", QC = NULL) {
+  X.norm <- matrix(nrow = nrow(X), ncol = ncol(X))
+  colnames(X.norm) <- colnames(X)
+  rownames(X.norm) <- rownames(X)
+  
+  if (!is.null(QC)) {
+    # if QC vector exists, use this as reference spectrum
+    if (length(QC) == 1) {
+      # only 1 reference sample given
+      mX <- as.numeric(X[QC, ])
+    } else {
+      if (n == "mean") {
+        mX <- as.numeric(colMeans(X[QC, ]))
+      }
+      if (n == "median") {
+        mX <- as.numeric(apply(X[QC, ], 2, median))
+      }
+    }
+  } else {
+    # otherwise use the mean or median of all samples as reference sample
+    if (n == "mean") {
+      mX <- as.numeric(colMeans(X))
+    }
+    if (n == "median") {
+      mX <- as.numeric(apply(X, 2, median))
+    }
+  }
+  
+  # do the actual normalisation
+  for (a in 1:nrow(X)) {
+    X.norm[a, ] <- as.numeric(X[a, ] / median(as.numeric(X[a, ] / mX)))
+  }
+  
+  return(X.norm)
+}
+
 # Data import --------------------------------------------
 file_list <- list.files(pattern = '*.xlsx')
 
@@ -212,55 +258,196 @@ df_list <- map(indi_IL_file_list, read_excel, sheet = "Results")
 
 # Filtering out column bleed and solvent --------------------------------------
 df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$", 
-                                                                 "^Benzene$", 
-                                                                 "Cyclotrisiloxane..hexamethyl",
-                                                                 "Cyclotetrasiloxane..octamethyl",
-                                                                 "^Toluene$",
-                                                                 "^Ethylbenzene$",
-                                                                 "Xylene")) 
+                                                         "^Benzene$", 
+                                                         "Cyclotrisiloxane..hexamethyl",
+                                                         "Cyclotetrasiloxane..octamethyl",
+                                                         "^Toluene$",
+                                                         "^Ethylbenzene$",
+                                                         "Xylene")) 
 
 
-# Iterative loop sub-setting data based on cumulative sum(Percent_Height)  --------
+# Data distribution Pre-normalization - Data sets are all heavy left-skewed
+data_plot_pre_norm <- list()
+for (i in 1:length(df_list_clean)) {
+  data_plot_pre_norm[[i]] <- ggplot(data = df_list_clean[[i]],
+                         aes(x = Area)) +
+    geom_histogram(bins = 100) +
+    ggtitle(indi_IL_file_list[[i]]) + 
+    scale_x_continuous(breaks=seq(0, 5000000, 1000000), limits = c(0, 5000000))
+}
+grid.arrange(grobs = data_plot_pre_norm, ncol = 5)
+
+# 1st layer Normalization with TSN
 slice_df_list <- list() 
 
 system.time({for (i in 1:length(df_list_clean)) { 
   df <- df_list_clean[[i]] %>%
+    # Percentage-based normalization aka. Total Sum normalization
     mutate(Percent_Area = Area/sum(Area)) %>%
     mutate(Percent_Height = Height/sum(Height)) %>%
     arrange(desc(Percent_Height)) # Percent_Height / Percent_Area
-    # transmute(rowwise(.), Percent_Area = sort(c_across(Percent_Area), decreasing = TRUE)) %>%
-    # transmute(rowwise(.), Percent_Height = sort(c_across(Percent_Height), decreasing = TRUE))
-    
-    
-  # subset data based on the largest number of iteration
-  for (row_num in 1:nrow(df)) {
-    # slice data based on condition of cumulative sum of percent_height
-    if (sum(df[1:row_num,]$Percent_Height) > 0.99) { # Percent_Height / Percent_Area
-      new_df <- slice_head(df, n = row_num)
-      break
-    }
-  }
+
+  # # subset data based on the largest number of iteration
+  # for (row_num in 1:nrow(df)) {
+  #   # slice data based on condition of cumulative sum of percent_height
+  #   if (sum(df[1:row_num,]$Percent_Height) > 0.99) { # Percent_Height / Percent_Area
+  #     new_df <- slice_head(df, n = row_num)
+  #     break
+  #   }
+  # }
  
   # Add sample_name column 
-  slice_df_list[[i]] <- new_df %>%
+  slice_df_list[[i]] <- df %>% 
     mutate(sample_name = indi_IL_file_list[[i]]) %>%
-    mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp",
+    mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", #case_when()
                               ifelse(str_detect(sample_name, "GasComp"), "GasComp",
                                      ifelse(str_detect(sample_name, "D"), "Diesel", "Gas"))))
 }})
 
+# Data distribution post-TSN - Data sets are all heavy left-skewed
+data_plot_TSN <- list()
+for (i in 1:length(slice_df_list)) {
+  data_plot_TSN[[i]] <- ggplot(data = slice_df_list[[i]],
+                           aes(x = Percent_Area)) +
+    geom_histogram(bins = 100) +
+    ggtitle(indi_IL_file_list[[i]])
+}
+grid.arrange(grobs = data_plot_TSN, ncol = 5)
+
 # Grouping compounds based on RT1, RT2, Ion1 -----------------------------------------------------------------------
 # Combine all subset_df together
-all_subset_clean <- bind_rows(slice_df_list)
+all_data_pre_norm <- bind_rows(slice_df_list)
 
-# anti_join(data, all_subset_clean_grouped)
-
-all_subset_clean_grouped <- grouping_comp(all_subset_clean)
+all_data_pre_norm_grouped <- grouping_comp(all_data_pre_norm)
 
 # Export df for later use
-write_xlsx(all_subset_clean_grouped, paste0(getwd(), "/grouping_compounds_byPercent_area.xlsx"))
+write_xlsx(all_data_pre_norm_grouped, paste0(getwd(), "/grouping_compounds_byPercent_height-240622.xlsx"))
 # testing_import <- read_excel(paste0(getwd(), "/grouping_compounds.xlsx"))
 
+# Pivot wider
+all_data_pre_norm_grouped_wider <- all_data_pre_norm_grouped %>%
+  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
+  mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
+  # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
+  group_by(sample_name, fuel_type, compound_group) %>% # compound_group / Compound
+  # Here we collapse the duplicates compound by calculate the mean of Percent Area,
+  # assuming that duplicates of similar compounds has the normal distribution
+  summarise(across(Percent_Area, median)) %>% 
+  # filter(sample_name %in% gas_clus2_sample) %>%
+  pivot_wider(names_from = compound_group, values_from = Percent_Area)
+
+View(all_data_pre_norm_grouped_wider)
+# Data Normalization and data reduction [based on cumulative sum(Percent_Height)]  --------
+
+MN <- function(data){
+  #Create an empty dataframe to fill with the transformed data
+  MEDIAN.sims <- data[,c(1:2)] 
+  
+  #Assign the reference profile (here arbitrarily chosen as the first profile in the dataset)
+  ref <- data[1, 3:length(data)]
+  append_list <- list()
+  append_list[[1]] <- data[1, 3:length(data)]
+  #Loop across each profile in the subsampled dataset
+  for (row in 2:nrow(data)) {
+    #Calculate the median ratio between the profile being normalised at row i, and the reference
+    ref_med <- median(na.omit(unlist(data[row, 3:length(data)]/ref)))
+    #Then loop across all peaks in the profile at row i
+    append_list[[row]] <- data[row,c(3:length(data))]/ref_med
+    # for (j in c(3:length(data))){
+      #and divide each peak by the median value for that profile
+      # MEDIAN.sims[i,j] <- (data[i,j]/ref_med)
+      
+      #Then add the original individual identifiers to the normalised data
+      # MEDIAN.sims[,c(1:3)] <- data[,c(1:3)]
+      #Assign the original column names
+      # colnames(MEDIAN.sims) <- names(data)
+  # }
+    }
+  append <- bind_rows(append_list)
+  new_mediandf <- bind_cols(MEDIAN.sims, append)
+  #Return the normalised data
+  return(MEDIAN.sims)
+}
+
+data_plot_MN <- MEDIAN.sims %>%
+  pivot_longer(cols = c(3:10189),
+               names_to = "compound_group",
+               values_to = "Percent_Area",
+               values_drop_na = TRUE)
+ggplot(data = data_plot_MN,
+       aes(x = Percent_Area)) +
+  facet_wrap(~ sample_name, scales = "free_y") +
+  geom_histogram(bins = 100)
+
+PQN <- function(data){
+  #Create an empty dataframe to fill with the transformed data
+  PQN.sims <- data.frame(matrix(ncol = length(data), nrow = nrow(data)))
+  #Create an empty data frame that will be used as the median reference
+  ref <- data.frame(matrix(ncol = length(data), nrow = 1))
+  #Then calculate the median of each peak
+  for(j in c(4:length(data))){
+    ref[,j] <- median(data[,j])
+  }
+  #Create an empty reference data frame to fill
+  quotients <- data.frame(matrix(ncol = length(data), nrow = nrow(data)))
+  #Loop across each profile in a dataset
+  for(i in 1:nrow(data)){
+    #and across all peaks in a profile
+    for(j in c(4:length(data))){
+      #and divide each peak by corresponding peak from the reference
+      quotients[i,j] <- data[i,j]/ref[,j]
+    }
+  }
+  #Remove the NAs where the individual identifiers were found
+  quotients[,c(1:3)] <- NULL
+  #Calculate the median quotient
+  q2 <- as.numeric(as.matrix(quotients))m_j <- median(na.omit(q2))
+  for(i in 1:nrow(data)){
+    #Then loop across all peaks in a chromatogram
+    for(j in c(4:length(data))){
+      #and divide each peak by the total for that chromatogram
+      PQN.sims[i,j] <- (data[i,j]/m_j)
+    }}
+  #Then add the original individual identifiers to the PQN data
+  PQN.sims[,c(1:3)] <- data[,c(1:3)]
+  #Assign the original column names
+  colnames(PQN.sims) <- names(data)
+  #Return the transformed data
+  return(PQN.sims)
+}
+coda <- function(data){
+  #Create an empty dataframe to fill with the transformed data
+  coda.sims <- data.frame(matrix(ncol = length(data), nrow = nrow(data)))
+  #Loop across each chromatogram in the subsampled dataset
+  for(i in 1:nrow(data)){
+    #Build a function for calculating the geometric mean
+    gm_mean = function(x, na.rm=TRUE, zero.propagate = FALSE){
+      if(any(x < 0, na.rm = TRUE)){
+        return(NaN)
+      }
+      if(zero.propagate){
+        if(any(x == 0, na.rm = TRUE)){
+          return(0)
+        }
+        exp(mean(log(x), na.rm = na.rm))
+      } else {
+        exp(sum(log(x[x > 0]), na.rm=na.rm) / length(x))
+      }
+    }
+    #calculate the sum of all peaks in a chromatogram
+    g.mean <- gm_mean(data[i,c(4:length(data))])
+    #Then loop across all peaks in a chromatogram
+    for(j in c(4:length(data))){
+      #and divide each peak by the geometric mean for that individual profile
+      coda.sims[i,j] <- log(data[i,j]/g.mean)
+      coda.sims[i,j][is.infinite(coda.sims[i,j])] <- 0#Then add the original individual identifiers to the normalised data
+      coda.sims[,c(1:3)] <- data[,c(1:3)]
+      #Assign the original column names
+      colnames(coda.sims) <- names(data)
+    }}
+  #Finally return the normalised data
+  return(coda.sims)
+}
 # Similar Compounds (high % area & height) found across samples ------------------------------------------------
 # Approach 1: Using compound "groups" by RT1, RT2, Ion1 Threshold
 idx_list <- comp_filter(all_subset_clean_grouped, indi_IL_file_list)
@@ -274,7 +461,7 @@ unique_compounds <- all_subset_clean_grouped[idx_list[[3]],]
 # When include 99% of cumulative peak height, all gasoline samples share 39 compounds in common
 # When include 99% of cumulative peak height, all diesel composite samples share 357 compounds in common
 # When include 99% of cumulative peak height, all gasoline composite samples share 248 compounds in common
-# When include 99% of cumulative peak height, all IL samples share 29(22, 13) compounds in common
+# When include 99% of cumulative peak height, all IL samples share 29 compounds in common (b4 compound grouping)
 # After grouping compounds based on RT1, RT2, Ion1 threshold, all 31 IL samples share 13 compound "groups" in common 
 
 
@@ -283,7 +470,6 @@ unique_compounds <- all_subset_clean_grouped[idx_list[[3]],]
 ggplot(data = similar_compounds, aes(x = Percent_Area)) +
   facet_wrap(~compound_group, scales = "free_y") +
   geom_histogram(bins = 50)
-
 # Distribution of RT1, RT2, Ion1
 summarydata1 <- similar_compounds %>%
   group_by(fuel_type, compound_group, sample_name) %>%
@@ -302,7 +488,7 @@ summarydata2 <- similar_compounds %>%
 
 
 # PCA -------------------------------------------------------------------------------------------------------------
-pcasubset <- all_subset_clean_height %>% # all_subset_clean_grouped / similar_compounds
+pcasubset <- all_subset_clean_grouped %>% # all_subset_clean_grouped / similar_compounds
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
   mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
@@ -343,7 +529,7 @@ subset2 <- subset2 %>%
 # PCA section
 pca_input <- data.frame(PCA_impute$completeObs)
 
-res.pca <- PCA(pcasubset,  #  pca_input / pcasubset
+res.pca <- PCA(pca_input,  #  pca_input / pcasubset
                scale.unit = TRUE, 
                graph = FALSE)
 
@@ -356,7 +542,7 @@ fviz_pca_biplot(res.pca,
                 repel = TRUE,
                 axes = c(1,2),
                 label = "ind",
-                habillage = pcasubset$sample_name, #  subset2 / pcasubset
+                habillage = subset2$sample_name, #  subset2 / pcasubset
                 # addEllipses=TRUE,
                 dpi = 900)
 
@@ -694,7 +880,7 @@ ggsave(paste0(getwd(), "/PCA graphs/sample_0220F00889_influencer.png"),
 
 
 
-# PCA --------------------------------------------------------------------
+# PCA reserve code--------------------------------------------------------------------
 # Using Percent_Area and Percent_height value on compounds
 # Diesel and DieselComp cluster
 # diesel_sample <- c("0220F001D.xlsx", "0220F005D.xlsx", "0220F009-2D.xlsx", "0220F009D.xlsx",
