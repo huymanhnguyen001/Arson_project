@@ -40,6 +40,7 @@ library(RcppML)
 library(CAMERA)
 library(NMF)
 library(Boruta)
+library(mixOmics)
 source("RUVRand.R")
 
 # vignette("parallel")
@@ -242,6 +243,44 @@ pqn <- function(X, n = "median", QC = NULL) {
   return(X.norm)
 }
 
+# RLA plots
+RlaPlots <- function(inputdata, type=c("ag", "wg"), cols=NULL,
+                     cex.axis=0.8, las=2, ylim=c(-2, 2), oma=c(7, 4, 4, 2) + 0.1, ...) {
+  type <- match.arg(type)
+  groups <- factor(inputdata[, 1], levels = unique(inputdata[, 1]))
+  unique.groups <- levels(groups)
+  if (is.null(cols)) 
+    cols <- ColList(length(unique.groups))
+  box_cols <- c(rep(NA, length(rownames(inputdata))))
+  for (ii in 1:length(inputdata[, 1])) 
+    box_cols[ii] <- cols[which(unique.groups == inputdata[, 1][ii])]
+  
+  # Within groups
+  if(type == "wg") {
+    out_data<-data.frame()
+    for (grp in unique.groups) {
+      submat <- inputdata[which(inputdata[, 1] == grp), -1]
+      med_vals <- apply(submat, 2, median)
+      swept_mat <- sweep(submat, 2, med_vals, "-")
+      out_data <- rbind(out_data, swept_mat)
+    }
+    # Across groups (i.e. type == "ag")
+  } else  {
+    med_vals <- apply(inputdata[, -1], 2, median)
+    out_data <- sweep(inputdata[, -1], 2, med_vals, "-")
+  }
+  
+  boxplot(t(out_data),
+          cex.axis=cex.axis,                 # font size
+          las=las,                           # label orientation
+          col=box_cols,                      # colours
+          ylim=ylim,                         # y-axis range
+          oma=oma,                           # outer margin size
+          ...
+  )
+  
+  abline(h=0)
+}
 # Data import --------------------------------------------
 file_list <- list.files(pattern = '*.xlsx')
 
@@ -254,10 +293,10 @@ indi_IL_file_list <- file_list %>%
   .[!str_detect(., "grouping_compounds")]
 
 # Import IL samples to list
-df_list <- map(indi_IL_file_list, read_excel, sheet = "Results")
+df_list <- purrr::map(indi_IL_file_list, read_xlsx, sheet = "Results")
 
 # Filtering out column bleed and solvent --------------------------------------
-df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$", 
+df_list_clean <- purrr::map(df_list, filtering, filter_list = c("^Carbon disulfide$", 
                                                          "^Benzene$", 
                                                          "Cyclotrisiloxane..hexamethyl",
                                                          "Cyclotetrasiloxane..octamethyl",
@@ -266,7 +305,8 @@ df_list_clean <- map(df_list, filtering, filter_list = c("^Carbon disulfide$",
                                                          "Xylene")) 
 
 
-# Data distribution Pre-normalization - Data sets are all heavy left-skewed
+
+# # Data distribution Pre-normalization ---------------------------------------------------------------------------
 data_plot_pre_norm <- list()
 for (i in 1:length(df_list_clean)) {
   data_plot_pre_norm[[i]] <- ggplot(data = df_list_clean[[i]],
@@ -275,7 +315,7 @@ for (i in 1:length(df_list_clean)) {
     ggtitle(indi_IL_file_list[[i]]) + 
     scale_x_continuous(breaks=seq(0, 5000000, 1000000), limits = c(0, 5000000))
 }
-grid.arrange(grobs = data_plot_pre_norm, ncol = 5)
+grid.arrange(grobs = data_plot_pre_norm, ncol = 5) # Data sets are all heavy left-skewed
 
 # 1st layer Normalization with TSN
 slice_df_list <- list() 
@@ -321,27 +361,27 @@ all_data_pre_norm <- bind_rows(slice_df_list)
 all_data_pre_norm_grouped <- grouping_comp(all_data_pre_norm)
 
 # Export df for later use
-write_xlsx(all_data_pre_norm_grouped, paste0(getwd(), "/grouping_compounds_byPercent_height-240622.xlsx"))
+# write_xlsx(all_data_pre_norm_grouped, paste0(getwd(), "/grouping_compounds_byPercent_height-240622.xlsx"))
 # testing_import <- read_excel(paste0(getwd(), "/grouping_compounds.xlsx"))
 
-# Pivot wider
+
+# # Pivot wider for Normalization ---------------------------------------------------------------------------------
 all_data_pre_norm_grouped_wider <- all_data_pre_norm_grouped %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
   mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
   # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
-  group_by(sample_name, fuel_type, compound_group) %>% # compound_group / Compound
+  group_by(sample_name, compound_group) %>% # fuel_type 
   # Here we collapse the duplicates compound by calculate the mean of Percent Area,
   # assuming that duplicates of similar compounds has the normal distribution
-  summarise(across(Percent_Area, median)) %>% 
-  # filter(sample_name %in% gas_clus2_sample) %>%
+  summarise(across(Percent_Area, median)) %>%
   pivot_wider(names_from = compound_group, values_from = Percent_Area)
 
 View(all_data_pre_norm_grouped_wider)
 # Data Normalization and data reduction [based on cumulative sum(Percent_Height)]  --------
-
+# Median Normalization
 MN <- function(data){
   #Create an empty dataframe to fill with the transformed data
-  MEDIAN.sims <- data[,c(1:2)] 
+  MEDIANdf <- data[,c(1:2)] 
   
   #Assign the reference profile (here arbitrarily chosen as the first profile in the dataset)
   ref <- data[1, 3:length(data)]
@@ -349,72 +389,58 @@ MN <- function(data){
   append_list[[1]] <- data[1, 3:length(data)]
   #Loop across each profile in the subsampled dataset
   for (row in 2:nrow(data)) {
-    #Calculate the median ratio between the profile being normalised at row i, and the reference
+    #Calculate the median ratio between the profile being normalised at row, and the reference
     ref_med <- median(na.omit(unlist(data[row, 3:length(data)]/ref)))
-    #Then loop across all peaks in the profile at row i
+    #Then divide all peaks in the profile by the median ratio
     append_list[[row]] <- data[row,c(3:length(data))]/ref_med
-    # for (j in c(3:length(data))){
-      #and divide each peak by the median value for that profile
-      # MEDIAN.sims[i,j] <- (data[i,j]/ref_med)
-      
-      #Then add the original individual identifiers to the normalised data
-      # MEDIAN.sims[,c(1:3)] <- data[,c(1:3)]
-      #Assign the original column names
-      # colnames(MEDIAN.sims) <- names(data)
-  # }
     }
-  append <- bind_rows(append_list)
-  new_mediandf <- bind_cols(MEDIAN.sims, append)
+  new_mediandf <- bind_cols(MEDIANdf, bind_rows(append_list))
   #Return the normalised data
-  return(MEDIAN.sims)
+  return(new_mediandf)
 }
+PQN <- function(data) {
+  #Create an empty data frame that will be used as the median reference
+  data <- all_data_pre_norm_grouped_wider[,c(2:length(all_data_pre_norm_grouped_wider))]
+  ref <- c()
+  newdata <- data.table(data)
+  PQNdf <- all_data_pre_norm_grouped_wider[,1]
+  #Then calculate the median of each peak across all sample profiles
+  for (j in c(2:length(newdata))) {
+    ref <- c(ref, median(newdata[[j]]))
+  }
+  #Create an empty reference data frame to fill
+  # quotients <- data.frame(matrix(ncol = length(data), nrow = nrow(data)))
+  quotients_list <- list()
+  #Loop across each profile in a dataset
+  for (j in c(2:length(data))) {
+    quotients_list[j] <- data[,j]/ref[j]
+  }
+  
+  #Calculate the median quotient
+  median_all <- median(na.omit(unlist(quotients_list)))
+  quotients_list2 <- list()
+  for (i in 1:nrow(data)) {
+    quotients_list2[[i]] <- data[i,]/median_all
+  }
+  new_PQNdf <- bind_cols(PQNdf, bind_rows(quotients_list2))
+  return(new_PQNdf)
+}
+MN_wider_data <- MN(all_data_pre_norm_grouped_wider)
 
-data_plot_MN <- MEDIAN.sims %>%
-  pivot_longer(cols = c(3:10189),
+data_plot_MN <- MN_wider_data %>%
+  pivot_longer(cols = c(3:length(.)),
                names_to = "compound_group",
                values_to = "Percent_Area",
-               values_drop_na = TRUE)
+               values_drop_na = TRUE
+               )
+
 ggplot(data = data_plot_MN,
        aes(x = Percent_Area)) +
   facet_wrap(~ sample_name, scales = "free_y") +
   geom_histogram(bins = 100)
 
-PQN <- function(data){
-  #Create an empty dataframe to fill with the transformed data
-  PQN.sims <- data.frame(matrix(ncol = length(data), nrow = nrow(data)))
-  #Create an empty data frame that will be used as the median reference
-  ref <- data.frame(matrix(ncol = length(data), nrow = 1))
-  #Then calculate the median of each peak
-  for(j in c(4:length(data))){
-    ref[,j] <- median(data[,j])
-  }
-  #Create an empty reference data frame to fill
-  quotients <- data.frame(matrix(ncol = length(data), nrow = nrow(data)))
-  #Loop across each profile in a dataset
-  for(i in 1:nrow(data)){
-    #and across all peaks in a profile
-    for(j in c(4:length(data))){
-      #and divide each peak by corresponding peak from the reference
-      quotients[i,j] <- data[i,j]/ref[,j]
-    }
-  }
-  #Remove the NAs where the individual identifiers were found
-  quotients[,c(1:3)] <- NULL
-  #Calculate the median quotient
-  q2 <- as.numeric(as.matrix(quotients))m_j <- median(na.omit(q2))
-  for(i in 1:nrow(data)){
-    #Then loop across all peaks in a chromatogram
-    for(j in c(4:length(data))){
-      #and divide each peak by the total for that chromatogram
-      PQN.sims[i,j] <- (data[i,j]/m_j)
-    }}
-  #Then add the original individual identifiers to the PQN data
-  PQN.sims[,c(1:3)] <- data[,c(1:3)]
-  #Assign the original column names
-  colnames(PQN.sims) <- names(data)
-  #Return the transformed data
-  return(PQN.sims)
-}
+
+
 coda <- function(data){
   #Create an empty dataframe to fill with the transformed data
   coda.sims <- data.frame(matrix(ncol = length(data), nrow = nrow(data)))
@@ -500,16 +526,20 @@ pcasubset <- all_subset_clean_grouped %>% # all_subset_clean_grouped / similar_c
   pivot_wider(names_from = compound_group, values_from = Percent_Area) %>% # compound_group / Compound
   column_to_rownames(., var = "sample_name") # must do before input in imputePCA()
 
+# PCA with data normalized by Median Normalization
+pcaMN <- MN_wider_data %>%
+  column_to_rownames(., var = "sample_name")
+
 # remove columns that has less than 5 unique values, including NA as a unique value
 # Aka. we remove compounds that exist in less than x samples ("lower bound compound filter")
 remove_col <- c()
-for (col in 1:ncol(pcasubset)) {
-  if (length(unique(pcasubset[,col])) < 4) {
+for (col in 1:ncol(pcaMN)) {
+  if (length(unique(pcaMN[,col])) < 4) {
     remove_col <- c(remove_col, col)
   }
 }
 
-pcasubset_removecol <- subset(pcasubset, select = -remove_col)
+pcasubset_removecol <- subset(pcaMN, select = -remove_col)
 
 # TRy imputePCA function, PCA input without NA values
 PCA_impute <- imputePCA(pcasubset_removecol,
@@ -640,7 +670,7 @@ tsne_plot <- plot_ly(data = pdb ,x =  ~X1, y = ~X2, z = ~X3,
 tsne_plot
 
 
-# UMAP Clustering -------------------------------------------------------------------------------------------------
+# UMAP clustering -------------------------------------------------------------------------------------------------
 umap <- umap(features, n_components = 3, random_state = 15)
 
 layout <- cbind(data.frame(umap[["layout"]]), subset2$sample_name)
