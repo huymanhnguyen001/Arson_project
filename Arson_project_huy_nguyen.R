@@ -28,26 +28,27 @@ library(umap)
 library(sqldf)
 library(svMisc)
 library(multiway)
-library(foreach)
-library(doSNOW)
+# library(foreach)
+# library(doSNOW)
 library(writexl)
-library(rapportools)
-library(randomForest)
-library(e1071)
-library(gbm)
-library(fitdistrplus)
-library(RcppML)
-library(CAMERA)
-library(NMF)
-library(Boruta)
-library(mixOmics)
-source("RUVRand.R")
+# library(rapportools)
+# library(randomForest)
+# library(e1071)
+# library(gbm)
+# library(fitdistrplus)
+# library(RcppML)
+# library(CAMERA)
+# library(NMF)
+# library(Boruta)
+# library(mixOmics)
+# source("RUVRand.R")
 
 # vignette("parallel")
-options(ggrepel.max.overlaps = 300)
-set.seed(12345)
-cl <- makeCluster(8, type = "SOCK")
-registerDoSNOW(cl)
+# options(ggrepel.max.overlaps = 300)
+# set.seed(12345)
+# cl <- makeCluster(8, type = "SOCK")
+# registerDoSNOW(cl)
+
 # Analysis Progress -------------------------------------------------------
 # fail to appropriately pivot_wider: each column should be name of compound and each row will be
 # the measurement of that compount, such as MF, RMF, RT1, RT2, Area %, Height, Ion 1, Ion 2, etc.
@@ -306,16 +307,16 @@ df_list_clean <- purrr::map(df_list, filtering, filter_list = c("^Carbon disulfi
 
 
 
-# # Data distribution Pre-normalization ---------------------------------------------------------------------------
-data_plot_pre_norm <- list()
-for (i in 1:length(df_list_clean)) {
-  data_plot_pre_norm[[i]] <- ggplot(data = df_list_clean[[i]],
-                         aes(x = Area)) +
-    geom_histogram(bins = 100) +
-    ggtitle(indi_IL_file_list[[i]]) + 
-    scale_x_continuous(breaks=seq(0, 5000000, 1000000), limits = c(0, 5000000))
-}
-grid.arrange(grobs = data_plot_pre_norm, ncol = 5) # Data sets are all heavy left-skewed
+# Data distribution Pre-normalization ---------------------------------------------------------------------------
+# data_plot_pre_norm <- list()
+# for (i in 1:length(df_list_clean)) {
+#   data_plot_pre_norm[[i]] <- ggplot(data = df_list_clean[[i]],
+#                          aes(x = Area)) +
+#     geom_histogram(bins = 100) +
+#     ggtitle(indi_IL_file_list[[i]]) + 
+#     scale_x_continuous(breaks=seq(0, 5000000, 1000000), limits = c(0, 5000000))
+# }
+# grid.arrange(grobs = data_plot_pre_norm, ncol = 5) # Data sets are all heavy left-skewed
 
 # 1st layer Normalization with TSN
 slice_df_list <- list() 
@@ -339,20 +340,20 @@ system.time({for (i in 1:length(df_list_clean)) {
   # Add sample_name column 
   slice_df_list[[i]] <- df %>% 
     mutate(sample_name = indi_IL_file_list[[i]]) %>%
-    mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", #case_when()
+    mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", 
                               ifelse(str_detect(sample_name, "GasComp"), "GasComp",
                                      ifelse(str_detect(sample_name, "D"), "Diesel", "Gas"))))
 }})
 
 # Data distribution post-TSN - Data sets are all heavy left-skewed
-data_plot_TSN <- list()
-for (i in 1:length(slice_df_list)) {
-  data_plot_TSN[[i]] <- ggplot(data = slice_df_list[[i]],
-                           aes(x = Percent_Area)) +
-    geom_histogram(bins = 100) +
-    ggtitle(indi_IL_file_list[[i]])
-}
-grid.arrange(grobs = data_plot_TSN, ncol = 5)
+# data_plot_TSN <- list()
+# for (i in 1:length(slice_df_list)) {
+#   data_plot_TSN[[i]] <- ggplot(data = slice_df_list[[i]],
+#                            aes(x = Percent_Area)) +
+#     geom_histogram(bins = 100) +
+#     ggtitle(indi_IL_file_list[[i]])
+# }
+# grid.arrange(grobs = data_plot_TSN, ncol = 5)
 
 # Grouping compounds based on RT1, RT2, Ion1 -----------------------------------------------------------------------
 # Combine all subset_df together
@@ -365,7 +366,7 @@ all_data_pre_norm_grouped <- grouping_comp(all_data_pre_norm)
 # testing_import <- read_excel(paste0(getwd(), "/grouping_compounds.xlsx"))
 
 
-# # Pivot wider for Normalization ---------------------------------------------------------------------------------
+# Pivot wider for Normalization ---------------------------------------------------------------------------------
 all_data_pre_norm_grouped_wider <- all_data_pre_norm_grouped %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
   mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
@@ -376,7 +377,8 @@ all_data_pre_norm_grouped_wider <- all_data_pre_norm_grouped %>%
   summarise(across(Percent_Area, median)) %>%
   pivot_wider(names_from = compound_group, values_from = Percent_Area)
 
-View(all_data_pre_norm_grouped_wider)
+# View(all_data_pre_norm_grouped_wider)
+
 # Data Normalization and data reduction [based on cumulative sum(Percent_Height)]  --------
 # Median Normalization
 MN <- function(data){
@@ -398,18 +400,16 @@ MN <- function(data){
   #Return the normalised data
   return(new_mediandf)
 }
+
 PQN <- function(data) {
   #Create an empty data frame that will be used as the median reference
-  data <- all_data_pre_norm_grouped_wider[,c(2:length(all_data_pre_norm_grouped_wider))]
   ref <- c()
-  newdata <- data.table(data)
+  newdata <- data.table(data[,c(2:length(data))])
   PQNdf <- all_data_pre_norm_grouped_wider[,1]
   #Then calculate the median of each peak across all sample profiles
   for (j in c(2:length(newdata))) {
     ref <- c(ref, median(newdata[[j]]))
   }
-  #Create an empty reference data frame to fill
-  # quotients <- data.frame(matrix(ncol = length(data), nrow = nrow(data)))
   quotients_list <- list()
   #Loop across each profile in a dataset
   for (j in c(2:length(data))) {
@@ -425,6 +425,7 @@ PQN <- function(data) {
   new_PQNdf <- bind_cols(PQNdf, bind_rows(quotients_list2))
   return(new_PQNdf)
 }
+
 MN_wider_data <- MN(all_data_pre_norm_grouped_wider)
 
 data_plot_MN <- MN_wider_data %>%
@@ -474,14 +475,20 @@ coda <- function(data){
   #Finally return the normalised data
   return(coda.sims)
 }
-# Similar Compounds (high % area & height) found across samples ------------------------------------------------
+# Similar Compounds found across samples ------------------------------------------------
 # Approach 1: Using compound "groups" by RT1, RT2, Ion1 Threshold
-idx_list <- comp_filter(all_subset_clean_grouped, indi_IL_file_list)
+idx_list <- comp_filter(all_data_pre_norm_grouped, indi_IL_file_list)
 
 
-similar_compounds <- all_subset_clean_grouped[idx_list[[1]],]
-other_compounds <- all_subset_clean_grouped[idx_list[[2]],]
-unique_compounds <- all_subset_clean_grouped[idx_list[[3]],]
+similar_compounds <- all_data_pre_norm_grouped[idx_list[[1]],][, -c(2,3,6:8)]
+other_compounds <- all_data_pre_norm_grouped[idx_list[[2]],][, -c(2,3,6:8)]
+unique_compounds <- all_data_pre_norm_grouped[idx_list[[3]],][, -c(2,3,6:8)]
+
+# Boxplot
+ggplot(data = similar_compounds, aes(fuel_type, Percent_Area)) +
+  geom_boxplot() +
+  facet_wrap(~compound_group, scales = "free_y") +
+  theme()
 
 # When include 99% of cumulative peak height, all diesel samples share 304 compounds in common
 # When include 99% of cumulative peak height, all gasoline samples share 39 compounds in common
@@ -514,52 +521,62 @@ summarydata2 <- similar_compounds %>%
 
 
 # PCA -------------------------------------------------------------------------------------------------------------
-pcasubset <- all_subset_clean_grouped %>% # all_subset_clean_grouped / similar_compounds
-  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
-  mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
-  # for a sample, if there are multiple occurences of a compound, then impute with mean of %Area and %Height 
-  group_by(sample_name, compound_group) %>% # compound_group / Compound
-  # Here we collapse the duplicates compound by calculate the mean of Percent Area,
-  # assuming that duplicates of similar compounds has the normal distribution
-  summarise(across(Percent_Area, median)) %>% 
-  # filter(sample_name %in% gas_clus2_sample) %>%
-  pivot_wider(names_from = compound_group, values_from = Percent_Area) %>% # compound_group / Compound
-  column_to_rownames(., var = "sample_name") # must do before input in imputePCA()
+# PCA with data normalized by TSN (Percent_Area)
+pcaTSN <- all_data_pre_norm_grouped_wider %>% 
+  column_to_rownames(., var = "sample_name") # must do before select_col and imputePCA()
 
 # PCA with data normalized by Median Normalization
-pcaMN <- MN_wider_data %>%
-  column_to_rownames(., var = "sample_name")
+# pcaMN <- MN_wider_data %>%
+#   column_to_rownames(., var = "sample_name")
 
 # remove columns that has less than 5 unique values, including NA as a unique value
 # Aka. we remove compounds that exist in less than x samples ("lower bound compound filter")
-remove_col <- c()
-for (col in 1:ncol(pcaMN)) {
-  if (length(unique(pcaMN[,col])) < 4) {
-    remove_col <- c(remove_col, col)
+# Since Regularized approach of imputePCA drawn initial value from Gaussian distribution, we need at
+# least 
+# REF: https://marketing.astm.org/acton/attachment/9652/f-f77f2c0b-9bdd-43c4-b29e-a5dc68c3a4b1/1/-/-/-/-/ja17dp.pdf#:~:text=What%20is%20the%20minimum%20number%20of%20data%20points,common%20answer%20from%20most%20statistical%20professionals%20is%20%E2%80%9C30.%E2%80%9D
+
+select_col <- c()
+for (col in 1:ncol(pcaTSN)) {
+  if (sum(!is.na(pcaTSN[,col])) > 30) { # select compounds that exist in every 31 samples
+    select_col <- c(select_col, col)
   }
 }
 
-pcasubset_removecol <- subset(pcaMN, select = -remove_col)
+pcasubset_removecol <- subset(pcaTSN, select = select_col)
+# selectcolcomp <- colnames(pcasubset_removecol)
+# selectcolcomp %in% unique(similar_compounds$compound_group)
 
-# TRy imputePCA function, PCA input without NA values
+# Boxplot distribution
+ggplot(data = pcasubset_removecol %>%
+         rownames_to_column(., "sample_name") %>%
+         pivot_longer(cols = c(2:length(.)),
+                      names_to = "compound_group",
+                      values_to = "Percent_Area") %>%
+         mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", 
+                                   ifelse(str_detect(sample_name, "GasComp"), "GasComp",
+                                          ifelse(str_detect(sample_name, "D"), "Diesel", "Gas")))), 
+       aes(fuel_type, Percent_Area)) +
+  geom_boxplot() +
+  facet_wrap(~compound_group, scales = "free_y")
+
+# Apply imputePCA function, since PCA input cannot have NA values
 PCA_impute <- imputePCA(pcasubset_removecol,
                         scale = TRUE,
-                        maxiter = 2000,
+                        maxiter = 2000, # need to optimise for best max iteration
                         method = "Regularized", #iterative approach-less overfitting
                         seed = 123)
 
 # For plotting biplot later
-subset2 <- rownames_to_column(data.frame(PCA_impute$completeObs),
-                                             "sample_name")
+subset2 <- rownames_to_column(pcasubset_removecol,
+                              "sample_name")
 
 subset2 <- subset2 %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
-  # %>% filter(sample_name %in% gas_clusall)
 
 # PCA section
 pca_input <- data.frame(PCA_impute$completeObs)
 
-res.pca <- PCA(pca_input,  #  pca_input / pcasubset
+res.pca <- PCA(pcasubset_removecol,  #  pca_input / pcasubset
                scale.unit = TRUE, 
                graph = FALSE)
 
@@ -576,6 +593,9 @@ fviz_pca_biplot(res.pca,
                 # addEllipses=TRUE,
                 dpi = 900)
 
+# Hierarchical Clustering on Principle Components
+hcpc <- HCPC(res.pca, nb.clust = -1)
+
 # Top variables (RT1, RT2,etc.) and compounds with highest contribution
 fviz_contrib(res.pca, choice = "var",
              top = 1500,
@@ -590,8 +610,125 @@ var_contrib_sorted <- data.frame(var_contrib) %>%
 
 var_contrib_sorted <- slice_head(df, n = 1500)
 
-# Hierarchical Clustering on Principle Components
+# Iterative loop removing variables Method 1: Remove_col that have less than x number of values -----------------------------------------------------
+summary_list <- list()
+i <- 1
+
+system.time({for (id in 1:length(indi_IL_file_list)) {
+  
+  templist <- list()
+  templist <- append(templist, id)
+  
+  select_col <- c()
+  for (col in 1:ncol(pcaTSN)) {
+    if (sum(!is.na(pcaTSN[,col])) > id) { # the amount of non-NA values of compounds must > x 
+      select_col <- c(select_col, col)
+    }
+  }
+  
+  pcasubset_removecol <- subset(pcaTSN, select = select_col)
+  
+  # Apply imputePCA function, since PCA input cannot have NA values
+  PCA_impute <- imputePCA(pcasubset_removecol,
+                          scale = TRUE,
+                          maxiter = 2000,
+                          method = "Regularized", # iterative approach-less overfitting
+                          seed = 123)
+  
+  # PCA section
+  pca_input <- data.frame(PCA_impute$completeObs)
+  
+  res.pca <- PCA(pca_input,
+                 scale.unit = TRUE, 
+                 graph = FALSE)
+  
+  templist <- append(templist, get_eigenvalue(res.pca)[2,3]) # get the sum of PC1 & PC2
+  summary_list[[i]] <- templist
+  i <- i + 1
+}})
+
+# summary_list_df <- bind_cols(summary_list)
+# count(n < 7)
+
+# Iterative loop removing variables Method 2: remove one column at a time ----------------------------------
+summary_list2 <- c()
+i <- 1
+
+select_col <- c()
+n <- c()
+for (col in 1:ncol(pcaTSN)) {
+  n <- c(n, sum(!is.na(pcaTSN[,col])))
+  if (sum(!is.na(pcaTSN[,col])) > 1) { # the amount of non-NA values of compounds must > x 
+    select_col <- c(select_col, col)
+  }
+}
+
+pcasubset_removecol <- subset(pcaTSN, select = select_col)
+
+# Apply imputePCA function, since PCA input cannot have NA values
+PCA_impute <- imputePCA(pcasubset_removecol,
+                        scale = TRUE,
+                        maxiter = 2000, # need to optimise for best max iteration
+                        method = "Regularized", #iterative approach-less overfitting
+                        seed = 123)
+
+# system.time({for (colnum in 1:length(pcasubset_removecol)) {
+  # Remove one column at a time
+
+# Check in the number of observation of compounds in 31 sample
+# n <- c()
+# for (col in 4771:length(pcasubset_removecol)) {
+#   n <- c(n, sum(!is.na(pcasubset_removecol[,col])))}
+# min(n)
+# max(n)
+
+pca_input <- data.frame(PCA_impute$completeObs)[, -c(1:4770)] 
+
+
+res.pca <- PCA(pca_input,
+               scale.unit = TRUE, 
+               graph = FALSE)
+
+subset2 <- rownames_to_column(pca_input,
+                              "sample_name")
+subset2 <- subset2 %>%
+  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name))))
+
+fviz_pca_biplot(res.pca,
+                select.var = list(cos2 = 5),
+                repel = TRUE,
+                axes = c(1,2),
+                label = "ind",
+                habillage = subset2$sample_name,
+                dpi = 900)
+
 hcpc <- HCPC(res.pca, nb.clust = -1)
+
+# Boxplot of top 101 compounds values before imputePCA
+# Extract compounds from pca_input 
+top101compounds <- colnames(pca_input)
+top101compoundsdf <- all_data_pre_norm_grouped[which(all_data_pre_norm_grouped$compound_group %in% top100compounds),]
+ggplot(data = top101compoundsdf[, -c(2,3,6:8)], 
+       aes(fuel_type, Percent_Area)) +
+  geom_boxplot() +
+  facet_wrap(~compound_group, scales = "free_y")
+
+# Boxplot of top 101 compounds values after imputePCA
+ggplot(data = pca_input %>%
+         rownames_to_column(., "sample_name") %>%
+         pivot_longer(cols = c(2:length(.)),
+                      names_to = "compound_group",
+                      values_to = "Percent_Area") %>%
+         mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", 
+                                   ifelse(str_detect(sample_name, "GasComp"), "GasComp",
+                                          ifelse(str_detect(sample_name, "D"), "Diesel", "Gas")))), 
+       aes(fuel_type, Percent_Area)) +
+  geom_boxplot() +
+  facet_wrap(~compound_group, scales = "free_y")
+
+# summary_list2 <- c(summary_list2, get_eigenvalue(res.pca)[2,3])
+
+# }})
 
 
 # Regression Classification PCR/PLS-DA, etc. ----------------------------------------------------------------------
