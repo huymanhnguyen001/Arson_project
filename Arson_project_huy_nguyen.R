@@ -41,6 +41,7 @@ library(writexl)
 # library(NMF)
 # library(Boruta)
 # library(mixOmics)
+# library(VIM)
 # source("RUVRand.R")
 
 # vignette("parallel")
@@ -184,7 +185,7 @@ grouping_comp <- function(data) {
 }
 
 # Filtering similar and unique compound
-comp_filter <- function(data, file_list) {
+comp_filter <- function(data, n) {
   all_similar_compounds_idx <- c()
   all_other_compounds_idx <- c()
   all_unique_compounds_idx <- c()
@@ -194,7 +195,7 @@ comp_filter <- function(data, file_list) {
     
     idx <- which(grepl(paste0("^", comp_grp, "$"), data$compound_group))
     
-    if (length(unique(data[idx,]$sample_name)) > (length(file_list) - 1)) {
+    if (length(unique(data[idx,]$sample_name)) > (n - 1)) {
       all_similar_compounds_idx <- c(all_similar_compounds_idx, idx)
     }
     else if (length(unique(data[idx,]$sample_name)) < 2) {
@@ -477,16 +478,72 @@ coda <- function(data){
 }
 # Similar Compounds found across samples ------------------------------------------------
 # Approach 1: Using compound "groups" by RT1, RT2, Ion1 Threshold
-idx_list <- comp_filter(all_data_pre_norm_grouped, indi_IL_file_list)
+idx_list <- comp_filter(all_data_pre_norm_grouped, length(indi_IL_file_list))
 
 
 similar_compounds <- all_data_pre_norm_grouped[idx_list[[1]],][, -c(2,3,6:8)]
 other_compounds <- all_data_pre_norm_grouped[idx_list[[2]],][, -c(2,3,6:8)]
 unique_compounds <- all_data_pre_norm_grouped[idx_list[[3]],][, -c(2,3,6:8)]
 
-# Boxplot
-ggplot(data = similar_compounds, aes(fuel_type, Percent_Area)) +
-  geom_boxplot() +
+
+ks_test <- function(df) {
+  ks_similar_compounds <- list()
+  i <- 1
+  for (com_grp in unique(similar_compounds$compound_group)) {
+    templist <- list()
+    # iterates through every fuel_type
+    for (fuel1 in unique(similar_compounds$fuel_type)) {
+      for (fuel2 in unique(similar_compounds$fuel_type)) {
+        if (fuel1 == fuel2) {
+          next
+        }
+        else {
+          subset_df1 <- filter(similar_compounds, (fuel_type == fuel1 & compound_group == com_grp))
+          subset_df2 <- filter(similar_compounds, (fuel_type == fuel2 & compound_group == com_grp))
+          templist[paste0(fuel1, "-", fuel2)] <- ks.test(x = subset_df1$Percent_Area,
+                                                         y = subset_df2$Percent_Area)$p.value
+          # templist[paste0(fuel1, "-", fuel2)] <- wilcox.test(x = subset_df1$Percent_Area,
+          #                                                y = subset_df2$Percent_Area)$p.value
+          # templist[paste0(fuel1, "-", fuel2)] <- t.test(subset_df1$Percent_Area,
+          #                                                     subset_df2$Percent_Area,
+          #                                                     mu = 0,
+          #                                                     sigma.x = 1,
+          #                                                     sigma.y = 1,
+          #                                                     conf.level = 0.95)$p.value
+          
+        }
+      }
+    }
+   
+    if (any(templist > 0.25)) {
+      next
+    }
+    else {
+      ks_similar_compounds[[i]] <- templist
+      names(ks_similar_compounds)[i] <- com_grp
+    }
+    i <- i + 1
+  }
+  return(ks_similar_compounds)
+}
+
+# Wider df for PCA
+similar_compounds_wider <- similar_compounds %>%
+  filter(., compound_group %in% names(ks_similar_compounds)) %>%
+  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
+  mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
+  group_by(sample_name, compound_group) %>% 
+  summarise(across(Percent_Area, median)) %>%
+  pivot_wider(names_from = compound_group, values_from = Percent_Area) %>%
+  column_to_rownames(., var = "sample_name")
+
+# Boxplot 81 similar compounds across 31 IL samples
+ggplot(data = similar_compounds 
+         %>% filter(., compound_group %in% names(ks_similar_compounds))
+       , aes(fuel_type, Percent_Area, fill = fuel_type)) +
+  geom_violin(width = 1) +
+  geom_boxplot(width = 0.25, color = "red", alpha = 0.05) +
+  scale_fill_viridis(discrete = TRUE) +
   facet_wrap(~compound_group, scales = "free_y") +
   theme()
 
@@ -522,7 +579,7 @@ summarydata2 <- similar_compounds %>%
 
 # PCA -------------------------------------------------------------------------------------------------------------
 # PCA with data normalized by TSN (Percent_Area)
-pcaTSN <- all_data_pre_norm_grouped_wider %>% 
+pcaTSN <- all_data_pre_norm_grouped_wider %>%
   column_to_rownames(., var = "sample_name") # must do before select_col and imputePCA()
 
 # PCA with data normalized by Median Normalization
@@ -560,6 +617,121 @@ ggplot(data = pcasubset_removecol %>%
   facet_wrap(~compound_group, scales = "free_y")
 
 # Apply imputePCA function, since PCA input cannot have NA values
+imputePCA <- function (X, ncp = 2, scale=TRUE, method=c("Regularized","EM"),row.w=NULL,
+                       ind.sup=NULL,quanti.sup=NULL,quali.sup=NULL,coeff.ridge=1,threshold = 1e-6,
+                       seed = NULL,nb.init=1,maxiter=1000,...){
+  
+  impute <- function (X, ncp = 4, scale=TRUE, method=NULL,ind.sup=NULL,quanti.sup=NULL,quali.sup=NULL,
+                      threshold = 1e-6,seed = NULL,init=1,maxiter=1000,row.w=NULL,coeff.ridge=1,...){
+    moy.p <- function(V, poids) {
+      res <- sum(V * poids,na.rm=TRUE)/sum(poids[!is.na(V)])
+    }
+    ec <- function(V, poids) {
+      res <- sqrt(sum(V^2 * poids,na.rm=TRUE)/sum(poids[!is.na(V)]))
+    }
+    
+    nb.iter <- 1
+    old <- Inf
+    objective <- 0
+    if (!is.null(seed)){set.seed(seed)}
+    X <- as.matrix(X)
+    ncp <- min(ncp,ncol(X),nrow(X)-1)
+    missing <- which(is.na(X))
+    mean.p <- apply(X, 2, moy.p,row.w)
+    Xhat <- t(t(X)-mean.p)
+    et <- apply(Xhat, 2, ec,row.w)
+    if (scale) Xhat <- t(t(Xhat)/et)
+    if (!is.null(quanti.sup)) Xhat[,quanti.sup] <- Xhat[,quanti.sup]*1e-08
+    if (any(is.na(X))) Xhat[missing] <- 0
+    if (init>1) Xhat[missing] <- rnorm(length(missing)) ## random initialization
+    fittedX <- Xhat
+    if (ncp==0) nb.iter=0
+    
+    while (nb.iter > 0) {
+      Xhat[missing] <- fittedX[missing]
+      if (!is.null(quanti.sup)) Xhat[,quanti.sup] <- Xhat[,quanti.sup]*1e+08
+      if (scale) Xhat=t(t(Xhat)*et)
+      Xhat <- t(t(Xhat)+mean.p)
+      mean.p <- apply(Xhat, 2, moy.p,row.w)
+      Xhat <- t(t(Xhat)-mean.p)
+      et <- apply(Xhat, 2, ec,row.w)
+      if (scale) Xhat <- t(t(Xhat)/et)
+      if (!is.null(quanti.sup)) Xhat[,quanti.sup] <- Xhat[,quanti.sup]*1e-08
+      
+      svd.res <- FactoMineR::svd.triplet(Xhat,row.w=row.w,ncp=ncp)
+      ##       sigma2 <- mean(svd.res$vs[-(1:ncp)]^2)
+      # sigma2  <- nrow(X)*ncol(X)/min(ncol(X),nrow(X)-1)* sum((svd.res$vs[-c(1:ncp)]^2)/((nrow(X)-1) * ncol(X) - (nrow(X)-1) * ncp - ncol(X) * ncp + ncp^2))
+      sigma2  <- nrX*ncX/min(ncX,nrX-1)* sum((svd.res$vs[-c(1:ncp)]^2)/((nrX-1) * ncX - (nrX-1) * ncp - ncX * ncp + ncp^2))
+      sigma2 <- min(sigma2*coeff.ridge,svd.res$vs[ncp+1]^2)
+      if (method=="em") sigma2 <-0
+      lambda.shrinked=(svd.res$vs[1:ncp]^2-sigma2)/svd.res$vs[1:ncp]
+      fittedX = tcrossprod(t(t(svd.res$U[,1:ncp,drop=FALSE]*row.w)*lambda.shrinked),svd.res$V[,1:ncp,drop=FALSE])
+      fittedX <- fittedX/row.w
+      diff <- Xhat-fittedX
+      diff[missing] <- 0
+      objective <- sum(diff^2*row.w)
+      #       objective <- mean((Xhat[-missing]-fittedX[-missing])^2)
+      criterion <- abs(1 - objective/old)
+      old <- objective
+      nb.iter <- nb.iter + 1
+      if (!is.nan(criterion)) {
+        if ((criterion < threshold) && (nb.iter > 5))  nb.iter <- 0
+        if ((objective < threshold) && (nb.iter > 5))  nb.iter <- 0
+      }
+      if (nb.iter > maxiter) {
+        nb.iter <- 0
+        warning(paste("Stopped after ",maxiter," iterations"))
+      }
+    }
+    if (!is.null(quanti.sup)) Xhat[,quanti.sup] <- Xhat[,quanti.sup]*1e+08
+    if (scale) Xhat <- t(t(Xhat)*et)
+    Xhat <- t(t(Xhat)+mean.p)
+    completeObs <- X
+    completeObs[missing] <- Xhat[missing]
+    if (!is.null(quanti.sup)) fittedX[,quanti.sup] <- fittedX[,quanti.sup]*1e+08
+    if (scale) fittedX <- t(t(fittedX)*et)
+    fittedX <- t(t(fittedX)+mean.p)
+    
+    result <- list()
+    result$completeObs <- completeObs
+    result$fittedX <- fittedX
+    return(result) 
+  }
+  
+  #### Main program
+  if (!is.null(quali.sup)){ 
+    Xtot <- X
+    if (!is.null(quanti.sup)) IndiceQuantisup <- colnames(Xtot)[quanti.sup]
+    X <- X[,-quali.sup]
+    if (!is.null(quanti.sup)) quanti.sup <- which(colnames(X)%in%IndiceQuantisup)
+  }
+  method <- match.arg(method,c("Regularized","regularized","EM","em"),several.ok=T)[1]
+  obj=Inf
+  method <- tolower(method)
+  nrX <- nrow(X)-length(ind.sup)
+  ncX <- ncol(X)-length(quanti.sup)
+  if (ncp>min(nrow(X)-2,ncol(X)-1)) stop("ncp is too large")
+  if (is.null(row.w)) row.w = rep(1,nrow(X))/nrow(X)
+  if (!is.null(ind.sup)) row.w[ind.sup] <- row.w[ind.sup]*1e-08
+  # col.w = rep(1,ncol(X))
+  # if (!is.null(quanti.sup)) col.w[quanti.sup] <- 1e-8
+  for (i in 1:nb.init){
+    if (!any(is.na(X))) return(X)
+    res.impute=impute(X, ncp=ncp, scale=scale, method=method, ind.sup=ind.sup,quanti.sup=quanti.sup,quali.sup=quali.sup,
+                      threshold = threshold,seed=if(!is.null(seed)){(seed*(i-1))}else{NULL},init=i,maxiter=maxiter,
+                      row.w=row.w,coeff.ridge=coeff.ridge)
+    if (mean((res.impute$fittedX[!is.na(X)]-X[!is.na(X)])^2) < obj){
+      res <- res.impute
+      obj <- mean((res.impute$fittedX[!is.na(X)]-X[!is.na(X)])^2)
+    }
+  }
+  if (!is.null(quali.sup)) {
+    Xtot[,-quali.sup] <- res$completeObs  # put the imputed values in the original matrix
+    res$completeObs <- Xtot
+  }
+  return(res)
+}
+
 PCA_impute <- imputePCA(pcasubset_removecol,
                         scale = TRUE,
                         maxiter = 2000, # need to optimise for best max iteration
@@ -567,10 +739,8 @@ PCA_impute <- imputePCA(pcasubset_removecol,
                         seed = 123)
 
 # For plotting biplot later
-subset2 <- rownames_to_column(pcasubset_removecol,
-                              "sample_name")
-
-subset2 <- subset2 %>%
+subset2 <- pcasubset_removecol %>%
+  rownames_to_column(., "sample_name") %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
 
 # PCA section
