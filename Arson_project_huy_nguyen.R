@@ -288,15 +288,15 @@ RlaPlots <- function(inputdata, type=c("ag", "wg"), cols=NULL,
 file_list <- list.files(pattern = '*.xlsx')
 
 # Pipe operator for isolating IL types
-indi_IL_file_list <- file_list %>%
-  # .[str_detect(., "D")]  %>%
-  # .[str_detect(., "DieselComp")] %>%
+gas_gascomp <- file_list %>% # indi_IL_file_list
+  .[!str_detect(., "D")]  %>%
+  .[!str_detect(., "DieselComp")] %>%
   # .[str_detect(., "GasComp")] %>%
   .[!str_ends(., "check.xlsx")] %>%
   .[!str_detect(., "grouping_compounds")]
 
 # Import IL samples to list
-df_list <- purrr::map(indi_IL_file_list, read_xlsx, sheet = "Results")
+df_list <- purrr::map(gas_gascomp, read_xlsx, sheet = "Results") # indi_IL_file_list
 
 # Filtering out column bleed and solvent --------------------------------------
 df_list_clean <- purrr::map(df_list, filtering, filter_list = c("^Carbon disulfide$", 
@@ -309,7 +309,7 @@ df_list_clean <- purrr::map(df_list, filtering, filter_list = c("^Carbon disulfi
 
 
 
-# Data distribution Pre-normalization ---------------------------------------------------------------------------
+# 1st layer Normalization with TSN and Data distribution Pre-normalization ---------------------------------------------------------------------------
 # data_plot_pre_norm <- list()
 # for (i in 1:length(df_list_clean)) {
 #   data_plot_pre_norm[[i]] <- ggplot(data = df_list_clean[[i]],
@@ -341,7 +341,7 @@ system.time({for (i in 1:length(df_list_clean)) {
  
   # Add sample_name column 
   slice_df_list[[i]] <- df %>% 
-    mutate(sample_name = indi_IL_file_list[[i]]) %>%
+    mutate(sample_name = gas_gascomp[[i]]) %>% # indi_IL_file_list
     mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", 
                               ifelse(str_detect(sample_name, "GasComp"), "GasComp",
                                      ifelse(str_detect(sample_name, "D"), "Diesel", "Gas"))))
@@ -368,7 +368,7 @@ all_data_pre_norm_grouped <- grouping_comp(all_data_pre_norm)
 # testing_import <- read_excel(paste0(getwd(), "/grouping_compounds.xlsx"))
 
 
-# Pivot wider for Normalization ---------------------------------------------------------------------------------
+# Pivot wider for other type of Data Normalization ---------------------------------------------------------------------------------
 all_data_pre_norm_grouped_wider <- all_data_pre_norm_grouped %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
   mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
@@ -492,34 +492,34 @@ pairwise_test <- function(df, p_val_threshold, test_choice = "t.test") {
   for (com_grp in unique(df$compound_group)) {
     templist <- list()
     # iterates through every fuel_type
-    for (fuel1 in unique(df$fuel_type)) {
-      idx1 <- which(df$fuel_type == fuel1 & df$compound_group == com_grp)
+    for (sample1 in unique(df$sample_name)) { #  sample1 in unique(df$sample_name) / fuel1 in unique(df$fuel_type) 
+      idx1 <- which(df$sample_name == sample1 & df$compound_group == com_grp) #   / df$fuel_type == fuel1
       if (length(idx1) < 2) {
         next
       }
       else {
-        for (fuel2 in unique(df$fuel_type)) {
-          if (fuel1 == fuel2) {
+        for (sample2 in unique(df$sample_name)) { #  sample2 in unique(df$sample_name) / fuel2 in unique(df$fuel_type)
+          if (sample1 == sample2) { # sample1 == sample2 / fuel1 == fuel2
             next
           }
           else {
-            idx2 <- which(df$fuel_type == fuel2 & df$compound_group == com_grp)
+            idx2 <- which(df$sample_name == sample2 & df$compound_group == com_grp) #  df$sample_name == sample2 / df$fuel_type == fuel2
             if (length(idx2) < 2) {
               next
             }
             else {
                 if (test_choice == "ks") {
-                  templist[paste0(fuel1, "-", fuel2)] <- ks.test(x = df[idx1,]$Percent_Area,
+                  templist[paste0(sample1, "-", sample2)] <- ks.test(x = df[idx1,]$Percent_Area,
                                                                  y = df[idx2,]$Percent_Area,
                                                                  alternative = "two.sided")$p.value
                 }
                 else if (test_choice == "mn") {
-                  templist[paste0(fuel1, "-", fuel2)] <- wilcox.test(x = df[idx1,]$Percent_Area,
+                  templist[paste0(sample1, "-", sample2)] <- wilcox.test(x = df[idx1,]$Percent_Area,
                                                                      y = df[idx2,]$Percent_Area,
                                                                      alternative = "two.sided")$p.value
                 }
                 else {
-                  templist[paste0(fuel1, "-", fuel2)] <- t.test(x = df[idx1,]$Percent_Area,
+                  templist[paste0(sample1, "-", sample2)] <- t.test(x = df[idx1,]$Percent_Area,
                                                                 y = df[idx2,]$Percent_Area)$p.value
                 }
             }
@@ -528,7 +528,6 @@ pairwise_test <- function(df, p_val_threshold, test_choice = "t.test") {
       }
     }
     
-   
     if (any(templist > p_val_threshold)) {
       next
     }
@@ -541,15 +540,40 @@ pairwise_test <- function(df, p_val_threshold, test_choice = "t.test") {
   return(pairwise_test)
 }
 
-# Pair wise test similar compounds
-system.time({pairwise_similar_compounds_mn <- pairwise_test(similar_compounds, 
-                                                               p_val_threshold = 0.15,
-                                                               test_choice = "mn")})
+# Pair wise test all data
+pairwise_all_data_ttest <- pairwise_test(all_data_pre_norm_grouped, 
+                                         p_val_threshold = 0.15,
+                                         test_choice = "t.test")
 
+pairwise_all_data_ks <- pairwise_test(all_data_pre_norm_grouped, 
+                                         p_val_threshold = 0.15,
+                                         test_choice = "ks")
+pairwise_all_data_mn <- pairwise_test(all_data_pre_norm_grouped, 
+                                         p_val_threshold = 0.15,
+                                         test_choice = "mn")
+
+pairwise_all_data_clean_mn <- c()
+for (len in 1:length(pairwise_all_data_mn)) {
+  if (length(pairwise_all_data_mn[[len]]) > 0) { # > 5
+    pairwise_all_data_clean_mn <- c(pairwise_all_data_clean_mn, pairwise_all_data_mn[len])
+  }
+}
+
+pairwise_all_data <- unique(names(c(pairwise_all_data_clean_ttest, 
+                                    pairwise_all_data_clean_ks,
+                                    pairwise_all_data_clean_mn)))
+
+# Pair wise test similar compounds =====================================================
+system.time({pairwise_similar_compounds_ttest <- pairwise_test(similar_compounds, 
+                                                               p_val_threshold = 0.01,
+                                                               test_choice = "t.test")})
+
+# Combine all resulting compound groups from KS, MN and t-test
 all_similar_compounds_pairwise <- unique(names(c(pairwise_similar_compounds_ks, 
                                                  pairwise_similar_compounds_mn,
                                                  pairwise_similar_compounds_ttest)))
 
+# Filter with resulting compound groups from pair-wise comparisons and pivot wider for PCA
 similar_compounds_wider <- similar_compounds %>%
   filter(., compound_group %in% all_similar_compounds_pairwise) %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) %>%
@@ -562,18 +586,18 @@ similar_compounds_wider <- similar_compounds %>%
 # Filter only compounds that found in all 4 fuel_type
 other_compounds_4_fueltype <- other_compounds %>%
   group_by(compound_group) %>%
-  filter(length(unique(fuel_type)) > 3)
+  filter(length(unique(fuel_type)) > 1)
 
 # BEfore imputing missing values--> pick out compound groups that most likely to has some differences between 4 fuel types
-system.time({pairwise_other_compounds <- pairwise_test(other_compounds_4_fueltype, 
-                                                       p_val_threshold = 0.15,
-                                                       test_choice = "mn")})
+system.time({pairwise_other_compounds <- pairwise_test(other_compounds_4_fueltype,  #  
+                                                       p_val_threshold = 0.01,
+                                                       test_choice = "ks")})
 
 # Remove compound that have less than 6 cross comparison
-pairwise_other_compounds_clean_mn <- c()
+pairwise_other_compounds_clean_ks <- c()
 for (len in 1:length(pairwise_other_compounds)) {
-  if (length(pairwise_other_compounds[[len]]) > 5) {
-    pairwise_other_compounds_clean_mn <- c(pairwise_other_compounds_clean_mn, pairwise_other_compounds[len])
+  if (length(pairwise_other_compounds[[len]]) > 5) { # > 5
+    pairwise_other_compounds_clean_ks <- c(pairwise_other_compounds_clean_ks, pairwise_other_compounds[len])
   }
 }
 
@@ -599,33 +623,35 @@ for (col in 1:ncol(other_compounds_wider1)) {
                                                                                    max = min(all_data_pre_norm_grouped$Percent_Area))
 }
 
-pcainput1 <- full_join(other_compounds_wider1, similar_compounds_wider) %>%
+# Initiate pca input by combining imputed LOD of other compounds with filtered similar compounds
+pcainput1 <- full_join(other_compounds_wider1 %>%
+                         rownames_to_column(., var = "sample_name"), similar_compounds_wider) %>%
   column_to_rownames(., var = "sample_name")
 
 # TRy PCA with these selected & imputed compound groups
-res.pca <- PCA(pcainput1, 
+res.pca1 <- PCA(pcainput1, 
                scale.unit = TRUE, 
                graph = FALSE)
 
 # Scree plot
-fviz_eig(res.pca,
+fviz_eig(res.pca1,
          addlabels = TRUE)
 # Biplot
-subset <- pcainput1 %>%
+subset1 <- pcainput1 %>%
   rownames_to_column(., "sample_name") %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
 
-fviz_pca_biplot(res.pca,
+fviz_pca_biplot(res.pca1,
                 select.var = list(cos2 = 5),
                 repel = TRUE,
                 axes = c(1,2),
                 label = "ind",
-                habillage = subset$sample_name,
+                habillage = subset1$sample_name,
                 dpi = 900,
-                title = "PCA_Biplot_LOD_Compound groups filtering via Pair-wise test at p-value 0.15")
+                title = "PCA_Biplot_LOD_Compound groups filtering via Pair-wise test at p-value 0.01")
 
 # Hierarchical Clustering on Principle Components
-hcpc <- HCPC(res.pca, nb.clust = -1,
+hcpc <- HCPC(res.pca1, nb.clust = -1,
              metric = "euclidean",
              method = "complete",
              graph = TRUE)
@@ -654,45 +680,32 @@ pcainput2 <- full_join(data.frame(imputed_other_compounds$completeObs) %>%
   column_to_rownames(., var = "sample_name")
 
 # TRy PCA with these selected & imputed compound groups
-res.pca <- PCA(pcainput2, 
+res.pca2 <- PCA(pcainput2, 
                scale.unit = TRUE, 
                graph = FALSE)
 
 # Scree plot
-fviz_eig(res.pca,
+fviz_eig(res.pca2,
          addlabels = TRUE)
 # Biplot
-subset <- pcainput2 %>%
+subset2 <- pcainput2 %>%
   rownames_to_column(., "sample_name") %>%
   mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
 
-fviz_pca_biplot(res.pca,
+fviz_pca_biplot(res.pca2,
                 select.var = list(cos2 = 5),
                 repel = TRUE,
                 axes = c(1,2),
                 label = "ind",
-                habillage = subset$sample_name,
+                habillage = subset2$sample_name,
                 dpi = 900,
-                title = "PCA_Biplot_imputePCA_Compound groups filtering via Pair-wise test at p-value 0.15")
+                title = "PCA_Biplot_imputePCA_Compound groups filtering via Pair-wise test at p-value 0.01")
 
 # Hierarchical Clustering on Principle Components
-hcpc <- HCPC(res.pca, nb.clust = -1,
+hcpc <- HCPC(res.pca2, nb.clust = -1,
              metric = "euclidean",
              method = "complete",
              graph = TRUE)
-
-# imputed_other_compounds_long <- data.frame(imputed_other_compounds$completeObs) %>%
-#   rownames_to_column(., "sample_name") %>%
-#   pivot_longer(cols = c(2:length(.)),
-#                names_to = "compound_group",
-#                values_to = "Percent_Area") %>%
-#   mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp",
-#                             ifelse(str_detect(sample_name, "GasComp"), "GasComp",
-#                                    ifelse(str_detect(sample_name, "D"), "Diesel", "Gas"))))
-# 
-# system.time({pairwise_imputed_other_compounds <- pairwise_test(imputed_other_compounds_long, 
-#                                                                p_val_threshold = 0.1,
-#                                                                test_choice = "t.test")})
 
 # Boxplot of data distribution of compound groups
 ggplot(data = imputed_other_compounds_long 
@@ -703,14 +716,6 @@ ggplot(data = imputed_other_compounds_long
   scale_fill_viridis(discrete = TRUE) +
   facet_wrap(~compound_group, scales = "free_y") +
   theme()
-
-# When include 99% of cumulative peak height, all diesel samples share 304 compounds in common
-# When include 99% of cumulative peak height, all gasoline samples share 39 compounds in common
-# When include 99% of cumulative peak height, all diesel composite samples share 357 compounds in common
-# When include 99% of cumulative peak height, all gasoline composite samples share 248 compounds in common
-# When include 99% of cumulative peak height, all IL samples share 29 compounds in common (b4 compound grouping)
-# After grouping compounds based on RT1, RT2, Ion1 threshold, all 31 IL samples share 13 compound "groups" in common 
-
 
 # Data Summary after Compound Grouping ----------------------------------------------------------------------------------------------------
 # Distribution of %Area of each compound_group --> histogram plot
@@ -733,258 +738,6 @@ summarydata2 <- similar_compounds %>%
   group_by(compound_group, Compound, fuel_type) %>%
   summarise(count = n(Compound)) 
 
-
-# PCA -------------------------------------------------------------------------------------------------------------
-# PCA with data normalized by TSN (Percent_Area)
-pcaTSN <- all_data_pre_norm_grouped_wider %>%
-  column_to_rownames(., var = "sample_name") # must do before select_col and imputePCA()
-
-# PCA with data normalized by Median Normalization
-# pcaMN <- MN_wider_data %>%
-#   column_to_rownames(., var = "sample_name")
-
-# remove columns that has less than 5 unique values, including NA as a unique value
-# Aka. we remove compounds that exist in less than x samples ("lower bound compound filter")
-# Since Regularized approach of imputePCA drawn initial value from Gaussian distribution, we need at
-# least 
-# REF: https://marketing.astm.org/acton/attachment/9652/f-f77f2c0b-9bdd-43c4-b29e-a5dc68c3a4b1/1/-/-/-/-/ja17dp.pdf#:~:text=What%20is%20the%20minimum%20number%20of%20data%20points,common%20answer%20from%20most%20statistical%20professionals%20is%20%E2%80%9C30.%E2%80%9D
-
-select_col <- c()
-for (col in 1:ncol(pcaTSN)) {
-  if (sum(!is.na(pcaTSN[,col])) > 30) { # select compounds that exist in every 31 samples
-    select_col <- c(select_col, col)
-  }
-}
-
-pcasubset_removecol <- subset(pcaTSN, select = select_col)
-# selectcolcomp <- colnames(pcasubset_removecol)
-# selectcolcomp %in% unique(similar_compounds$compound_group)
-
-# Boxplot distribution
-ggplot(data = pcasubset_removecol %>%
-         rownames_to_column(., "sample_name") %>%
-         pivot_longer(cols = c(2:length(.)),
-                      names_to = "compound_group",
-                      values_to = "Percent_Area") %>%
-         mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", 
-                                   ifelse(str_detect(sample_name, "GasComp"), "GasComp",
-                                          ifelse(str_detect(sample_name, "D"), "Diesel", "Gas")))), 
-       aes(fuel_type, Percent_Area)) +
-  geom_boxplot() +
-  facet_wrap(~compound_group, scales = "free_y")
-
-# Apply imputePCA function, since PCA input cannot have NA values
-PCA_impute <- imputePCA(pcasubset_removecol,
-                        scale = TRUE,
-                        maxiter = 2000, # need to optimise for best max iteration
-                        method = "Regularized", #iterative approach-less overfitting
-                        seed = 123)
-
-# For plotting biplot later
-subset2 <- pcasubset_removecol %>%
-  rownames_to_column(., "sample_name") %>%
-  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
-
-# PCA section
-pca_input <- data.frame(PCA_impute$completeObs)
-
-res.pca <- PCA(pcasubset_removecol,  #  pca_input / pcasubset
-               scale.unit = TRUE, 
-               graph = FALSE)
-
-# Scree plot
-fviz_eig(res.pca,
-         addlabels = TRUE)
-# Biplot
-fviz_pca_biplot(res.pca,
-                select.var = list(cos2 = 5),# name, # Top x active variables with the highest cos2
-                repel = TRUE,
-                axes = c(1,2),
-                label = "ind",
-                habillage = subset2$sample_name, #  subset2 / pcasubset
-                # addEllipses=TRUE,
-                dpi = 900)
-
-# Hierarchical Clustering on Principle Components
-hcpc <- HCPC(res.pca, nb.clust = -1)
-
-# Top variables (RT1, RT2,etc.) and compounds with highest contribution
-fviz_contrib(res.pca, choice = "var",
-             top = 1500,
-             axes = 1:2) + # contrib of var to PC1 and 2
-  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
-
-##### Extract the top 1100 compounds contribute the most to PC1:PC2
-var_contrib_sorted <- data.frame(var_contrib) %>%
-  rownames_to_column(., var = "Compound") %>%
-  mutate_at("Dim.1", funs(sort(., decreasing = TRUE))) %>% # sort descending percent_area
-  mutate_at("Dim.2",funs(sort(., decreasing = TRUE)))
-
-var_contrib_sorted <- slice_head(df, n = 1500)
-
-# Iterative loop removing variables Method 1: Remove_col that have less than x number of values -----------------------------------------------------
-summary_list <- list()
-i <- 1
-
-system.time({for (id in 1:length(indi_IL_file_list)) {
-  
-  templist <- list()
-  templist <- append(templist, id)
-  
-  select_col <- c()
-  for (col in 1:ncol(pcaTSN)) {
-    if (sum(!is.na(pcaTSN[,col])) > id) { # the amount of non-NA values of compounds must > x 
-      select_col <- c(select_col, col)
-    }
-  }
-  
-  pcasubset_removecol <- subset(pcaTSN, select = select_col)
-  
-  # Apply imputePCA function, since PCA input cannot have NA values
-  PCA_impute <- imputePCA(pcasubset_removecol,
-                          scale = TRUE,
-                          maxiter = 2000,
-                          method = "Regularized", # iterative approach-less overfitting
-                          seed = 123)
-  
-  # PCA section
-  pca_input <- data.frame(PCA_impute$completeObs)
-  
-  res.pca <- PCA(pca_input,
-                 scale.unit = TRUE, 
-                 graph = FALSE)
-  
-  templist <- append(templist, get_eigenvalue(res.pca)[2,3]) # get the sum of PC1 & PC2
-  summary_list[[i]] <- templist
-  i <- i + 1
-}})
-
-# summary_list_df <- bind_cols(summary_list)
-# count(n < 7)
-
-# Iterative loop removing variables Method 2: remove one column at a time ----------------------------------
-summary_list2 <- c()
-i <- 1
-
-select_col <- c()
-n <- c()
-for (col in 1:ncol(pcaTSN)) {
-  n <- c(n, sum(!is.na(pcaTSN[,col])))
-  if (sum(!is.na(pcaTSN[,col])) > 1) { # the amount of non-NA values of compounds must > x 
-    select_col <- c(select_col, col)
-  }
-}
-
-pcasubset_removecol <- subset(pcaTSN, select = select_col)
-
-# Apply imputePCA function, since PCA input cannot have NA values
-PCA_impute <- imputePCA(pcasubset_removecol,
-                        scale = TRUE,
-                        maxiter = 2000, # need to optimise for best max iteration
-                        method = "Regularized", #iterative approach-less overfitting
-                        seed = 123)
-
-# system.time({for (colnum in 1:length(pcasubset_removecol)) {
-  # Remove one column at a time
-
-# Check in the number of observation of compounds in 31 sample
-# n <- c()
-# for (col in 4771:length(pcasubset_removecol)) {
-#   n <- c(n, sum(!is.na(pcasubset_removecol[,col])))}
-# min(n)
-# max(n)
-
-pca_input <- data.frame(PCA_impute$completeObs)[, -c(1:4770)] 
-
-
-res.pca <- PCA(pca_input,
-               scale.unit = TRUE, 
-               graph = FALSE)
-
-subset2 <- rownames_to_column(pca_input,
-                              "sample_name")
-subset2 <- subset2 %>%
-  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name))))
-
-fviz_pca_biplot(res.pca,
-                select.var = list(cos2 = 5),
-                repel = TRUE,
-                axes = c(1,2),
-                label = "ind",
-                habillage = subset2$sample_name,
-                dpi = 900)
-
-hcpc <- HCPC(res.pca, nb.clust = -1)
-
-# Boxplot of top 101 compounds values before imputePCA
-# Extract compounds from pca_input 
-top101compounds <- colnames(pca_input)
-top101compoundsdf <- all_data_pre_norm_grouped[which(all_data_pre_norm_grouped$compound_group %in% top100compounds),]
-ggplot(data = top101compoundsdf[, -c(2,3,6:8)], 
-       aes(fuel_type, Percent_Area)) +
-  geom_boxplot() +
-  facet_wrap(~compound_group, scales = "free_y")
-
-# Boxplot of top 101 compounds values after imputePCA
-ggplot(data = pca_input %>%
-         rownames_to_column(., "sample_name") %>%
-         pivot_longer(cols = c(2:length(.)),
-                      names_to = "compound_group",
-                      values_to = "Percent_Area") %>%
-         mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", 
-                                   ifelse(str_detect(sample_name, "GasComp"), "GasComp",
-                                          ifelse(str_detect(sample_name, "D"), "Diesel", "Gas")))), 
-       aes(fuel_type, Percent_Area)) +
-  geom_boxplot() +
-  facet_wrap(~compound_group, scales = "free_y")
-
-# summary_list2 <- c(summary_list2, get_eigenvalue(res.pca)[2,3])
-
-# }})
-
-
-# Regression Classification PCR/PLS-DA, etc. ----------------------------------------------------------------------
-# NEED MORE DATA TO TRAIN CLASSIFICATION
-library(caret)
-subset2$lab_enc <- ifelse(str_detect(subset2$sample_name, "DieselCom"), 1, 
-                                         ifelse(str_detect(subset2$sample_name, "GasComp"), 2,
-                                                ifelse(str_detect(subset2$sample_name, "D"), 3, 4)))
-# move label to the front of df
-subset2 <- subset2 %>%
-  relocate(lab_enc, .before = 2)
-  
-# Partitioning data set 
-classification_data <- subset(subset_filterquantile2, select = -c(sample_name))
-inTraining <- createDataPartition(classification_data$lab_enc,
-                                  p = .60, list = FALSE)
-training <- classification_data[inTraining,]
-testing  <- classification_data[-inTraining,]
-
-ctrl <- trainControl(
-  method = "cv",
-  number = 10,
-)
-
-model <- train(lab_enc~.,
-               data = training,
-               method = "pls", # "lm", pls", "lasso", rf"
-               preProcess = c("center", "scale", "pca"),
-               trControl = ctrl)
-
-plot(model)
-
-test.features <- subset(testing, select = -c(lab_enc))
-test.target <- subset(testing, select = lab_enc)[,1]
-
-predictions <- predict(model, newdata = test.features)
-cor(test.target, predictions) ^ 2
-
-
-var <- get_pca_var(res.pca)
-var_coord <- var$coord
-var_contrib <- var$contrib
-# var_cos2 <- var$cos2
-# corrplot(var$cos2, is.corr = FALSE)
 
 
 # t-SNE clustering ------------------------------------------------------------------------------------------------
@@ -1032,6 +785,50 @@ umap_plot <- plot_ly(layout, x = ~X1, y = ~X2, z = ~X3,
 umap_plot
 
 # REDUNDANT CODEs
+# Regression Classification PCR/PLS-DA, etc. ----------------------------------------------------------------------
+# NEED MORE DATA TO TRAIN CLASSIFICATION
+library(caret)
+subset2$lab_enc <- ifelse(str_detect(subset2$sample_name, "DieselCom"), 1, 
+                          ifelse(str_detect(subset2$sample_name, "GasComp"), 2,
+                                 ifelse(str_detect(subset2$sample_name, "D"), 3, 4)))
+# move label to the front of df
+subset2 <- subset2 %>%
+  relocate(lab_enc, .before = 2)
+
+# Partitioning data set 
+classification_data <- subset(subset_filterquantile2, select = -c(sample_name))
+inTraining <- createDataPartition(classification_data$lab_enc,
+                                  p = .60, list = FALSE)
+training <- classification_data[inTraining,]
+testing  <- classification_data[-inTraining,]
+
+ctrl <- trainControl(
+  method = "cv",
+  number = 10,
+)
+
+model <- train(lab_enc~.,
+               data = training,
+               method = "pls", # "lm", pls", "lasso", rf"
+               preProcess = c("center", "scale", "pca"),
+               trControl = ctrl)
+
+plot(model)
+
+test.features <- subset(testing, select = -c(lab_enc))
+test.target <- subset(testing, select = lab_enc)[,1]
+
+predictions <- predict(model, newdata = test.features)
+cor(test.target, predictions) ^ 2
+
+
+var <- get_pca_var(res.pca)
+var_coord <- var$coord
+var_contrib <- var$contrib
+# var_cos2 <- var$cos2
+# corrplot(var$cos2, is.corr = FALSE)
+
+
 # Selecting representative Diesel compounds for each diesel sample ---------------------------------------------------------------------------
 # Get coordinates of variables
 var_coor <- get_pca_var(subset_filterquantilePCA)$coord
@@ -1580,3 +1377,232 @@ length(unique(all_unique_compounds$Compound))
 # 963 compounds unique for 5 diesel compounds
 
 # examine the cumulative peak height and peak area per sample of compounds found across 39 samples
+# imputed_other_compounds_long <- data.frame(imputed_other_compounds$completeObs) %>%
+#   rownames_to_column(., "sample_name") %>%
+#   pivot_longer(cols = c(2:length(.)),
+#                names_to = "compound_group",
+#                values_to = "Percent_Area") %>%
+#   mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp",
+#                             ifelse(str_detect(sample_name, "GasComp"), "GasComp",
+#                                    ifelse(str_detect(sample_name, "D"), "Diesel", "Gas"))))
+# 
+# system.time({pairwise_imputed_other_compounds <- pairwise_test(imputed_other_compounds_long, 
+#                                                                p_val_threshold = 0.1,
+#                                                                test_choice = "t.test")})
+
+# REserve code of PCA -------------------------------------------------------------------------------------------------------------
+# PCA with data normalized by TSN (Percent_Area)
+pcaTSN <- all_data_pre_norm_grouped_wider %>%
+  column_to_rownames(., var = "sample_name") # must do before select_col and imputePCA()
+
+# PCA with data normalized by Median Normalization
+# pcaMN <- MN_wider_data %>%
+#   column_to_rownames(., var = "sample_name")
+
+# remove columns that has less than 5 unique values, including NA as a unique value
+# Aka. we remove compounds that exist in less than x samples ("lower bound compound filter")
+# Since Regularized approach of imputePCA drawn initial value from Gaussian distribution, we need at
+# least 
+# REF: https://marketing.astm.org/acton/attachment/9652/f-f77f2c0b-9bdd-43c4-b29e-a5dc68c3a4b1/1/-/-/-/-/ja17dp.pdf#:~:text=What%20is%20the%20minimum%20number%20of%20data%20points,common%20answer%20from%20most%20statistical%20professionals%20is%20%E2%80%9C30.%E2%80%9D
+
+select_col <- c()
+for (col in 1:ncol(pcaTSN)) {
+  if (sum(!is.na(pcaTSN[,col])) > 30) { # select compounds that exist in every 31 samples
+    select_col <- c(select_col, col)
+  }
+}
+
+pcasubset_removecol <- subset(pcaTSN, select = select_col)
+# selectcolcomp <- colnames(pcasubset_removecol)
+# selectcolcomp %in% unique(similar_compounds$compound_group)
+
+# Boxplot distribution
+ggplot(data = pcasubset_removecol %>%
+         rownames_to_column(., "sample_name") %>%
+         pivot_longer(cols = c(2:length(.)),
+                      names_to = "compound_group",
+                      values_to = "Percent_Area") %>%
+         mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", 
+                                   ifelse(str_detect(sample_name, "GasComp"), "GasComp",
+                                          ifelse(str_detect(sample_name, "D"), "Diesel", "Gas")))), 
+       aes(fuel_type, Percent_Area)) +
+  geom_boxplot() +
+  facet_wrap(~compound_group, scales = "free_y")
+
+# Apply imputePCA function, since PCA input cannot have NA values
+PCA_impute <- imputePCA(pcasubset_removecol,
+                        scale = TRUE,
+                        maxiter = 2000, # need to optimise for best max iteration
+                        method = "Regularized", #iterative approach-less overfitting
+                        seed = 123)
+
+# For plotting biplot later
+subset2 <- pcasubset_removecol %>%
+  rownames_to_column(., "sample_name") %>%
+  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
+
+# PCA section
+pca_input <- data.frame(PCA_impute$completeObs)
+
+res.pca <- PCA(pcasubset_removecol,  #  pca_input / pcasubset
+               scale.unit = TRUE, 
+               graph = FALSE)
+
+# Scree plot
+fviz_eig(res.pca,
+         addlabels = TRUE)
+# Biplot
+fviz_pca_biplot(res.pca,
+                select.var = list(cos2 = 5),# name, # Top x active variables with the highest cos2
+                repel = TRUE,
+                axes = c(1,2),
+                label = "ind",
+                habillage = subset2$sample_name, #  subset2 / pcasubset
+                # addEllipses=TRUE,
+                dpi = 900)
+
+# Hierarchical Clustering on Principle Components
+hcpc <- HCPC(res.pca, nb.clust = -1)
+
+# Top variables (RT1, RT2,etc.) and compounds with highest contribution
+fviz_contrib(res.pca, choice = "var",
+             top = 1500,
+             axes = 1:2) + # contrib of var to PC1 and 2
+  theme(plot.margin = margin(t = 0.5, r = 0.5, b = 0.5, l = 3.5, "cm"))
+
+##### Extract the top 1100 compounds contribute the most to PC1:PC2
+var_contrib_sorted <- data.frame(var_contrib) %>%
+  rownames_to_column(., var = "Compound") %>%
+  mutate_at("Dim.1", funs(sort(., decreasing = TRUE))) %>% # sort descending percent_area
+  mutate_at("Dim.2",funs(sort(., decreasing = TRUE)))
+
+var_contrib_sorted <- slice_head(df, n = 1500)
+
+# Iterative loop removing variables Method 1: Remove_col that have less than x number of values -----------------------------------------------------
+summary_list <- list()
+i <- 1
+
+system.time({for (id in 1:length(indi_IL_file_list)) {
+  
+  templist <- list()
+  templist <- append(templist, id)
+  
+  select_col <- c()
+  for (col in 1:ncol(pcaTSN)) {
+    if (sum(!is.na(pcaTSN[,col])) > id) { # the amount of non-NA values of compounds must > x 
+      select_col <- c(select_col, col)
+    }
+  }
+  
+  pcasubset_removecol <- subset(pcaTSN, select = select_col)
+  
+  # Apply imputePCA function, since PCA input cannot have NA values
+  PCA_impute <- imputePCA(pcasubset_removecol,
+                          scale = TRUE,
+                          maxiter = 2000,
+                          method = "Regularized", # iterative approach-less overfitting
+                          seed = 123)
+  
+  # PCA section
+  pca_input <- data.frame(PCA_impute$completeObs)
+  
+  res.pca <- PCA(pca_input,
+                 scale.unit = TRUE, 
+                 graph = FALSE)
+  
+  templist <- append(templist, get_eigenvalue(res.pca)[2,3]) # get the sum of PC1 & PC2
+  summary_list[[i]] <- templist
+  i <- i + 1
+}})
+
+# summary_list_df <- bind_cols(summary_list)
+# count(n < 7)
+
+# Iterative loop removing variables Method 2: remove one column at a time ----------------------------------
+summary_list2 <- c()
+i <- 1
+
+select_col <- c()
+n <- c()
+for (col in 1:ncol(pcaTSN)) {
+  n <- c(n, sum(!is.na(pcaTSN[,col])))
+  if (sum(!is.na(pcaTSN[,col])) > 1) { # the amount of non-NA values of compounds must > x 
+    select_col <- c(select_col, col)
+  }
+}
+
+pcasubset_removecol <- subset(pcaTSN, select = select_col)
+
+# Apply imputePCA function, since PCA input cannot have NA values
+PCA_impute <- imputePCA(pcasubset_removecol,
+                        scale = TRUE,
+                        maxiter = 2000, # need to optimise for best max iteration
+                        method = "Regularized", #iterative approach-less overfitting
+                        seed = 123)
+
+# system.time({for (colnum in 1:length(pcasubset_removecol)) {
+# Remove one column at a time
+
+# Check in the number of observation of compounds in 31 sample
+# n <- c()
+# for (col in 4771:length(pcasubset_removecol)) {
+#   n <- c(n, sum(!is.na(pcasubset_removecol[,col])))}
+# min(n)
+# max(n)
+
+pca_input <- data.frame(PCA_impute$completeObs)[, -c(1:4770)] 
+
+
+res.pca <- PCA(pca_input,
+               scale.unit = TRUE, 
+               graph = FALSE)
+
+subset2 <- rownames_to_column(pca_input,
+                              "sample_name")
+subset2 <- subset2 %>%
+  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name))))
+
+fviz_pca_biplot(res.pca,
+                select.var = list(cos2 = 5),
+                repel = TRUE,
+                axes = c(1,2),
+                label = "ind",
+                habillage = subset2$sample_name,
+                dpi = 900)
+
+hcpc <- HCPC(res.pca, nb.clust = -1)
+
+# Boxplot of top 101 compounds values before imputePCA
+# Extract compounds from pca_input 
+top101compounds <- colnames(pca_input)
+top101compoundsdf <- all_data_pre_norm_grouped[which(all_data_pre_norm_grouped$compound_group %in% top100compounds),]
+ggplot(data = top101compoundsdf[, -c(2,3,6:8)], 
+       aes(fuel_type, Percent_Area)) +
+  geom_boxplot() +
+  facet_wrap(~compound_group, scales = "free_y")
+
+# Boxplot of top 101 compounds values after imputePCA
+ggplot(data = pca_input %>%
+         rownames_to_column(., "sample_name") %>%
+         pivot_longer(cols = c(2:length(.)),
+                      names_to = "compound_group",
+                      values_to = "Percent_Area") %>%
+         mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", 
+                                   ifelse(str_detect(sample_name, "GasComp"), "GasComp",
+                                          ifelse(str_detect(sample_name, "D"), "Diesel", "Gas")))), 
+       aes(fuel_type, Percent_Area)) +
+  geom_boxplot() +
+  facet_wrap(~compound_group, scales = "free_y")
+
+# summary_list2 <- c(summary_list2, get_eigenvalue(res.pca)[2,3])
+
+# }})
+
+
+# When include 99% of cumulative peak height, all diesel samples share 304 compounds in common
+# When include 99% of cumulative peak height, all gasoline samples share 39 compounds in common
+# When include 99% of cumulative peak height, all diesel composite samples share 357 compounds in common
+# When include 99% of cumulative peak height, all gasoline composite samples share 248 compounds in common
+# When include 99% of cumulative peak height, all IL samples share 29 compounds in common (b4 compound grouping)
+# After grouping compounds based on RT1, RT2, Ion1 threshold, all 31 IL samples share 13 compound "groups" in common 
+
