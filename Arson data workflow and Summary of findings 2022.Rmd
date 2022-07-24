@@ -1,0 +1,88 @@
+---
+title: "Arson data Workflow and Summary of findings"
+author: "Huy Nguyen"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+<br> <br>
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+library(DiagrammeR)
+library(ggplot2)
+library(readxl)
+library(ggpubr)
+library(gtable)
+library(gridExtra)
+library(viridis)
+library(wesanderson)
+library(tidyverse)
+library(lubridate)
+library(dplyr)
+library(factoextra)
+library(FactoMineR)
+library(data.table)
+library(corrplot)
+library(purrr)
+library(stringr)
+library(stringi)
+library(ChemoSpec) # ANOVA-PCA combo
+library(DiscriMiner) # PLS-DA combo
+library(missMDA)
+library(tsne)
+library(Rtsne)
+library(rgl)
+library(collapse)
+library(plotly)
+library(umap)
+library(sqldf)
+library(svMisc)
+library(multiway)
+```
+
+### Arson Data Workflow
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE, fig.width=10}
+grViz("digraph nicegraph  {
+      node [fontname = Helvetica, shape = rectangle, fixedsize = false, width = 1]
+      
+      1 [label = <<FONT COLOR='blue' POINT-SIZE='18'><b>Data import </b></FONT>>]; 
+      2 [label = <<b><font color='blue' POINT-SIZE='18'>Filtering out column bleed and solvent     </font></b>>]
+      3 [label = <<b><font color='blue' POINT-SIZE='18'>Data Normalization (TSN as 1st layer)   </font></b>>]
+      4 [label = <<b><font color='blue' POINT-SIZE='18'>Grouping compounds based on RT1, RT2, Ion1    </font></b>>]
+      5 [label = <<b><font color='blue' POINT-SIZE='18'>Identify shared and unique compound groups across samples        </font></b>>]
+      6 [label = <<b><font color='blue' POINT-SIZE='18'>Statistical test to identify potential markers      </font></b>>]
+      7 [label = <<b><font color='blue' POINT-SIZE='18'>Test potential markers by clustering analysis      </font></b>>]
+      8 [label = <<b><font color='blue' POINT-SIZE='18'>Regression Classification   </font></b>>]
+      m1 [label = 'Pairwise comparison']
+      m1a [label = 'Kolmogorov-Smirnov test']
+      m1b [label = 'Mann-Whitney Rank Sum test']
+      m1c [label = 'Student t-Test']
+      m2 [label = 'Multiple comparison']
+      m2a [label = 'ANOVA']
+      m2b [label = 'ANCOVA']
+
+      # node [shape=none, width=0, height=0, label='']
+      # Create invisible dummy nodes
+      # create downward direct edges from dummy nodes to targets
+      edge [dir=normal]
+      6 -> {m1 m2}; m1 -> {m1a m1b m1c}; m2 -> {m2a m2b};
+      # create horizontal directed edge from dummy nodes to horizontal side node. Edge direction is impsed through rank = same
+
+      # create undirected edge from source to dummy node
+      edge [dir=normal]
+      1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8;
+    }")
+```
+<br> <br>
+
+### Summary of findings
+
+You can also embed plots, for example:
+
+```{r, warning = FALSE, message = FALSE, echo = FALSE}
+
+```
