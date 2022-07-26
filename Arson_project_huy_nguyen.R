@@ -1,4 +1,5 @@
 # Loading Packages --------------------------------------------------------
+library(DiagrammeR)
 library(ggplot2)
 library(readxl)
 library(ggpubr)
@@ -43,7 +44,7 @@ library(writexl)
 # library(mixOmics)
 # library(VIM)
 # source("RUVRand.R")
-
+# detach(package:splines, unload = TRUE)
 # vignette("parallel")
 # options(ggrepel.max.overlaps = 300)
 # set.seed(12345)
@@ -59,7 +60,6 @@ library(writexl)
 # - 0220F00991
 # - month (02) year (20) station (009) octane (91)
 # Anything with a D at end is diesel and the composites are obviously a mixture of a fuel. 
-
 
 # Functions -------------------------------------------------------------------------------------------------------
 # Filtering matched compound names
@@ -244,7 +244,7 @@ pqn <- function(X, n = "median", QC = NULL) {
   return(X.norm)
 }
 
-# RLA plots
+# Relative log abundance plots
 RlaPlots <- function(inputdata, type=c("ag", "wg"), cols=NULL,
                      cex.axis=0.8, las=2, ylim=c(-2, 2), oma=c(7, 4, 4, 2) + 0.1, ...) {
   type <- match.arg(type)
@@ -283,20 +283,74 @@ RlaPlots <- function(inputdata, type=c("ag", "wg"), cols=NULL,
   abline(h=0)
 }
 
+# Pair wise comparison
+pairwise_test <- function(df, p_val_threshold, test_choice = "t.test") {
+  pairwise_test <- list()
+  i <- 1
+  for (com_grp in unique(df$compound_group)) {
+    templist <- list()
+    # iterates through every fuel_type
+    for (fuel1 in unique(df$fuel_type)) { #  sample1 in unique(df$sample_name) / fuel1 in unique(df$fuel_type) 
+      idx1 <- which(df$fuel_type == fuel1 & df$compound_group == com_grp) #  df$sample_name == sample1 / df$fuel_type == fuel1
+      if (length(idx1) < 2) {
+        next
+      }
+      else {
+        for (fuel2 in unique(df$fuel_type)) { #  sample2 in unique(df$sample_name) / fuel2 in unique(df$fuel_type)
+          if (fuel1 == fuel2) { # sample1 == sample2 / fuel1 == fuel2
+            next
+          }
+          else {
+            idx2 <- which(df$fuel_type == fuel2 & df$compound_group == com_grp) #  df$sample_name == sample2 / df$fuel_type == fuel2
+            if (length(idx2) < 2) {
+              next
+            }
+            else {
+              if (test_choice == "ks") {
+                templist[paste0(fuel1, "-", fuel2)] <- ks.test(x = df[idx1,]$Percent_Area,
+                                                               y = df[idx2,]$Percent_Area,
+                                                               alternative = "two.sided")$p.value
+              }
+              else if (test_choice == "mn") {
+                templist[paste0(fuel1, "-", fuel2)] <- wilcox.test(x = df[idx1,]$Percent_Area,
+                                                                   y = df[idx2,]$Percent_Area,
+                                                                   alternative = "two.sided")$p.value
+              }
+              else {
+                templist[paste0(fuel1, "-", fuel2)] <- t.test(x = df[idx1,]$Percent_Area,
+                                                              y = df[idx2,]$Percent_Area)$p.value
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    if (any(templist > p_val_threshold)) {
+      next
+    }
+    else {
+      pairwise_test[[i]] <- templist
+      names(pairwise_test)[i] <- com_grp
+    }
+    i <- i + 1
+  }
+  return(pairwise_test)
+}
 
 # Data import --------------------------------------------
 file_list <- list.files(pattern = '*.xlsx')
 
 # Pipe operator for isolating IL types
-gas_gascomp <- file_list %>% # indi_IL_file_list
-  .[!str_detect(., "D")]  %>%
-  .[!str_detect(., "DieselComp")] %>%
+indi_IL_file_list <- file_list %>% # indi_IL_file_list
+  # .[!str_detect(., "D")]  %>%
+  # .[!str_detect(., "DieselComp")] %>%
   # .[str_detect(., "GasComp")] %>%
   .[!str_ends(., "check.xlsx")] %>%
   .[!str_detect(., "grouping_compounds")]
 
 # Import IL samples to list
-df_list <- purrr::map(gas_gascomp, read_xlsx, sheet = "Results") # indi_IL_file_list
+df_list <- purrr::map(indi_IL_file_list, read_xlsx, sheet = "Results") # indi_IL_file_list
 
 # Filtering out column bleed and solvent --------------------------------------
 df_list_clean <- purrr::map(df_list, filtering, filter_list = c("^Carbon disulfide$", 
@@ -341,7 +395,7 @@ system.time({for (i in 1:length(df_list_clean)) {
  
   # Add sample_name column 
   slice_df_list[[i]] <- df %>% 
-    mutate(sample_name = gas_gascomp[[i]]) %>% # indi_IL_file_list
+    mutate(sample_name = indi_IL_file_list[[i]]) %>% # indi_IL_file_list
     mutate(fuel_type = ifelse(str_detect(sample_name, "DieselComp"), "DieselComp", 
                               ifelse(str_detect(sample_name, "GasComp"), "GasComp",
                                      ifelse(str_detect(sample_name, "D"), "Diesel", "Gas"))))
@@ -403,6 +457,20 @@ MN <- function(data){
   return(new_mediandf)
 }
 
+MN_wider_data <- MN(all_data_pre_norm_grouped_wider)
+
+data_plot_MN <- MN_wider_data %>%
+  pivot_longer(cols = c(3:length(.)),
+               names_to = "compound_group",
+               values_to = "Percent_Area",
+               values_drop_na = TRUE
+  )
+
+ggplot(data = data_plot_MN,
+       aes(x = Percent_Area)) +
+  facet_wrap(~ sample_name, scales = "free_y") +
+  geom_histogram(bins = 100)
+
 PQN <- function(data) {
   #Create an empty data frame that will be used as the median reference
   ref <- c()
@@ -427,21 +495,6 @@ PQN <- function(data) {
   new_PQNdf <- bind_cols(PQNdf, bind_rows(quotients_list2))
   return(new_PQNdf)
 }
-
-MN_wider_data <- MN(all_data_pre_norm_grouped_wider)
-
-data_plot_MN <- MN_wider_data %>%
-  pivot_longer(cols = c(3:length(.)),
-               names_to = "compound_group",
-               values_to = "Percent_Area",
-               values_drop_na = TRUE
-               )
-
-ggplot(data = data_plot_MN,
-       aes(x = Percent_Area)) +
-  facet_wrap(~ sample_name, scales = "free_y") +
-  geom_histogram(bins = 100)
-
 
 coda <- function(data){
   #Create an empty dataframe to fill with the transformed data
@@ -476,8 +529,50 @@ coda <- function(data){
   #Finally return the normalised data
   return(coda.sims)
 }
-# Similar Compounds found across samples ------------------------------------------------
-# Approach 1: Using compound "groups" by RT1, RT2, Ion1 Threshold
+
+ISN <- function(data){
+  #Create an empty dataframe to fill with the transformed data
+  ISN.sims <- data.frame(matrix(ncol = length(data), nrow = nrow(data)))
+  #Identify the peak with the maximum area
+  max <- colnames(data[,c(4:length(data))])[apply(data[,c(4:length(data))],1,which.max)]
+  #Then identify the peak that is consistently the highest, which is the 'calibration' peak
+  max.peak <- names(which.max(table(max)))
+  #Loop across each profile in a dataset
+  for(i in 1:nrow(data)){
+    #Then loop across all peaks in a chromatogram
+    for(j in c(4:length(data))){#and divide each peak by the calibration peak for that chromatogram
+      #And express as a percentage
+      ISN.sims[i,j] <- (data[i,j]/data[i,max.peak])*100
+    }}
+  #Then add the original individual identifiers to the ISN data
+  ISN.sims[,c(1:3)] <- data[,c(1:3)]
+  #Assign the original column names
+  colnames(ISN.sims) <- names(data)
+  #Finally return the ISN normalised data
+  ISN.sims
+}
+
+ESN <- function(data,
+                standard = 28){ # standard is sample no. 28, aka. at row 28 of the data frame
+  #Create an empty dataframe to fill with the transformed data
+  ESN.sims <- data.frame(matrix(ncol = length(data), nrow = nrow(data)))
+  #Loop across each profile in a dataset
+  for(i in 1:nrow(data)){
+    #Then loop across all peaks in a chromatogram
+    for(j in c(4:length(data))){
+      #and divide each peak by the external standard
+      #Here peak 25 was parameterised to be the standrd
+      ESN.sims[i,j] <- (data[i,j]/data[i,standard])*100
+    }}
+  #Then add the original individual identifiers to the ESN data
+  ESN.sims[,c(1:3)] <- data[,c(1:3)]
+  #Assign the original column names
+  colnames(ESN.sims) <- names(data)#Finally return the normalised data
+  ESN.sims
+}
+
+# Identify shared and unique compound groups across samples ------------------------------------------------
+# Approach 1: Using compound groups obtained through RT1, RT2, Ion1
 system.time({idx_list <- comp_filter(all_data_pre_norm_grouped, length(indi_IL_file_list))})
 
 
@@ -486,88 +581,41 @@ other_compounds <- all_data_pre_norm_grouped[idx_list[[2]],][, -c(2,3,6:8)]
 unique_compounds <- all_data_pre_norm_grouped[idx_list[[3]],][, -c(2,3,6:8)]
 
 
-pairwise_test <- function(df, p_val_threshold, test_choice = "t.test") {
-  pairwise_test <- list()
-  i <- 1
-  for (com_grp in unique(df$compound_group)) {
-    templist <- list()
-    # iterates through every fuel_type
-    for (sample1 in unique(df$sample_name)) { #  sample1 in unique(df$sample_name) / fuel1 in unique(df$fuel_type) 
-      idx1 <- which(df$sample_name == sample1 & df$compound_group == com_grp) #   / df$fuel_type == fuel1
-      if (length(idx1) < 2) {
-        next
-      }
-      else {
-        for (sample2 in unique(df$sample_name)) { #  sample2 in unique(df$sample_name) / fuel2 in unique(df$fuel_type)
-          if (sample1 == sample2) { # sample1 == sample2 / fuel1 == fuel2
-            next
-          }
-          else {
-            idx2 <- which(df$sample_name == sample2 & df$compound_group == com_grp) #  df$sample_name == sample2 / df$fuel_type == fuel2
-            if (length(idx2) < 2) {
-              next
-            }
-            else {
-                if (test_choice == "ks") {
-                  templist[paste0(sample1, "-", sample2)] <- ks.test(x = df[idx1,]$Percent_Area,
-                                                                 y = df[idx2,]$Percent_Area,
-                                                                 alternative = "two.sided")$p.value
-                }
-                else if (test_choice == "mn") {
-                  templist[paste0(sample1, "-", sample2)] <- wilcox.test(x = df[idx1,]$Percent_Area,
-                                                                     y = df[idx2,]$Percent_Area,
-                                                                     alternative = "two.sided")$p.value
-                }
-                else {
-                  templist[paste0(sample1, "-", sample2)] <- t.test(x = df[idx1,]$Percent_Area,
-                                                                y = df[idx2,]$Percent_Area)$p.value
-                }
-            }
-          }
-        }
-      }
-    }
-    
-    if (any(templist > p_val_threshold)) {
-      next
-    }
-    else {
-      pairwise_test[[i]] <- templist
-      names(pairwise_test)[i] <- com_grp
-    }
-    i <- i + 1
-  }
-  return(pairwise_test)
-}
+
 
 # Pair wise test all data
-pairwise_all_data_ttest <- pairwise_test(all_data_pre_norm_grouped, 
-                                         p_val_threshold = 0.15,
-                                         test_choice = "t.test")
-
-pairwise_all_data_ks <- pairwise_test(all_data_pre_norm_grouped, 
-                                         p_val_threshold = 0.15,
-                                         test_choice = "ks")
-pairwise_all_data_mn <- pairwise_test(all_data_pre_norm_grouped, 
-                                         p_val_threshold = 0.15,
-                                         test_choice = "mn")
-
-pairwise_all_data_clean_mn <- c()
-for (len in 1:length(pairwise_all_data_mn)) {
-  if (length(pairwise_all_data_mn[[len]]) > 0) { # > 5
-    pairwise_all_data_clean_mn <- c(pairwise_all_data_clean_mn, pairwise_all_data_mn[len])
-  }
-}
-
-pairwise_all_data <- unique(names(c(pairwise_all_data_clean_ttest, 
-                                    pairwise_all_data_clean_ks,
-                                    pairwise_all_data_clean_mn)))
+# pairwise_all_data_ttest <- pairwise_test(all_data_pre_norm_grouped, 
+#                                          p_val_threshold = 0.15,
+#                                          test_choice = "t.test")
+# 
+# pairwise_all_data_ks <- pairwise_test(all_data_pre_norm_grouped, 
+#                                          p_val_threshold = 0.15,
+#                                          test_choice = "ks")
+# pairwise_all_data_mn <- pairwise_test(all_data_pre_norm_grouped, 
+#                                          p_val_threshold = 0.15,
+#                                          test_choice = "mn")
+# 
+# pairwise_all_data_clean_mn <- c()
+# for (len in 1:length(pairwise_all_data_mn)) {
+#   if (length(pairwise_all_data_mn[[len]]) > 0) { # > 5
+#     pairwise_all_data_clean_mn <- c(pairwise_all_data_clean_mn, pairwise_all_data_mn[len])
+#   }
+# }
+# 
+# pairwise_all_data <- unique(names(c(pairwise_all_data_clean_ttest, 
+#                                     pairwise_all_data_clean_ks,
+#                                     pairwise_all_data_clean_mn)))
 
 # Pair wise test similar compounds =====================================================
-system.time({pairwise_similar_compounds_ttest <- pairwise_test(similar_compounds, 
-                                                               p_val_threshold = 0.01,
-                                                               test_choice = "t.test")})
-
+pairwise_similar_compounds_ks <- pairwise_test(similar_compounds, 
+                                               p_val_threshold = 0.05,
+                                               test_choice = "ks")
+pairwise_similar_compounds_mn <- pairwise_test(similar_compounds, 
+                                               p_val_threshold = 0.05,
+                                               test_choice = "mn")
+pairwise_similar_compounds_ttest <- pairwise_test(similar_compounds, 
+                                                  p_val_threshold = 0.05,
+                                                  test_choice = "t.test")
 # Combine all resulting compound groups from KS, MN and t-test
 all_similar_compounds_pairwise <- unique(names(c(pairwise_similar_compounds_ks, 
                                                  pairwise_similar_compounds_mn,
@@ -580,24 +628,66 @@ similar_compounds_wider <- similar_compounds %>%
   mutate(compound_group = factor(compound_group, levels = c(unique(compound_group)))) %>%
   group_by(sample_name, compound_group) %>%
   summarise(across(Percent_Area, median)) %>%
-  pivot_wider(names_from = compound_group, values_from = Percent_Area)
+  pivot_wider(names_from = compound_group, values_from = Percent_Area) %>%
+  column_to_rownames(., var = "sample_name")
 
-# Pair wise test Other compounds-========================================================-
+res.pca <- PCA(similar_compounds_wider, 
+               scale.unit = TRUE, 
+               graph = FALSE)
+
+subset <- similar_compounds_wider %>%
+  rownames_to_column(., "sample_name") %>%
+  mutate(sample_name = factor(sample_name, levels = c(unique(sample_name)))) 
+
+fviz_pca_biplot(res.pca,
+                select.var = list(cos2 = 5),
+                repel = TRUE,
+                axes = c(1,2),
+                label = "ind",
+                habillage = subset$sample_name,
+                title = "PCA_Biplot Similar compound groups filtering via Pair-wise test at p-value 0.05",
+                dpi = 900)
+
+# Hierarchical Clustering on Principle Components
+hcpc <- HCPC(res.pca, nb.clust = -1,
+             metric = "euclidean",
+             method = "complete",
+             graph = TRUE)
+
+# Pair wise test Other compounds =======================================================
 # Filter only compounds that found in all 4 fuel_type
 other_compounds_4_fueltype <- other_compounds %>%
   group_by(compound_group) %>%
-  filter(length(unique(fuel_type)) > 1)
+  filter(length(unique(fuel_type)) > 3)
 
 # BEfore imputing missing values--> pick out compound groups that most likely to has some differences between 4 fuel types
-system.time({pairwise_other_compounds <- pairwise_test(other_compounds_4_fueltype,  #  
-                                                       p_val_threshold = 0.01,
-                                                       test_choice = "ks")})
+pairwise_other_compounds_ks <- pairwise_test(other_compounds_4_fueltype, 
+                                             p_val_threshold = 0.05,
+                                             test_choice = "ks")
+pairwise_other_compounds_mn <- pairwise_test(other_compounds_4_fueltype, 
+                                             p_val_threshold = 0.05,
+                                             test_choice = "mn")
+pairwise_other_compounds_ttest <- pairwise_test(other_compounds_4_fueltype, 
+                                                p_val_threshold = 0.05,
+                                                test_choice = "ttest")
 
-# Remove compound that have less than 6 cross comparison
+# Remove compound that have less than 6 cross comparison, since some of the compound groups do not have enough data point to run pairwise test
 pairwise_other_compounds_clean_ks <- c()
-for (len in 1:length(pairwise_other_compounds)) {
-  if (length(pairwise_other_compounds[[len]]) > 5) { # > 5
-    pairwise_other_compounds_clean_ks <- c(pairwise_other_compounds_clean_ks, pairwise_other_compounds[len])
+for (len in 1:length(pairwise_other_compounds_ks)) {
+  if (length(pairwise_other_compounds_ks[[len]]) > 5) { 
+    pairwise_other_compounds_clean_ks <- c(pairwise_other_compounds_clean_ks, pairwise_other_compounds_ks[len])
+  }
+}
+pairwise_other_compounds_clean_mn <- c()
+for (len in 1:length(pairwise_other_compounds_mn)) {
+  if (length(pairwise_other_compounds_mn[[len]]) > 5) { 
+    pairwise_other_compounds_clean_mn <- c(pairwise_other_compounds_clean_mn, pairwise_other_compounds_mn[len])
+  }
+}
+pairwise_other_compounds_clean_ttest <- c()
+for (len in 1:length(pairwise_other_compounds_ttest)) {
+  if (length(pairwise_other_compounds_ttest[[len]]) > 5) { 
+    pairwise_other_compounds_clean_ttest <- c(pairwise_other_compounds_clean_ttest, pairwise_other_compounds_ttest[len])
   }
 }
 
@@ -625,7 +715,9 @@ for (col in 1:ncol(other_compounds_wider1)) {
 
 # Initiate pca input by combining imputed LOD of other compounds with filtered similar compounds
 pcainput1 <- full_join(other_compounds_wider1 %>%
-                         rownames_to_column(., var = "sample_name"), similar_compounds_wider) %>%
+                         rownames_to_column(., var = "sample_name"), 
+                       similar_compounds_wider %>%
+                         rownames_to_column(., var = "sample_name")) %>%
   column_to_rownames(., var = "sample_name")
 
 # TRy PCA with these selected & imputed compound groups
@@ -648,13 +740,14 @@ fviz_pca_biplot(res.pca1,
                 label = "ind",
                 habillage = subset1$sample_name,
                 dpi = 900,
-                title = "PCA_Biplot_LOD_Compound groups filtering via Pair-wise test at p-value 0.01")
+                title = "PCA_Biplot_LOD_Compound groups filtering via Pair-wise test at p-value 0.05")
 
 # Hierarchical Clustering on Principle Components
-hcpc <- HCPC(res.pca1, nb.clust = -1,
-             metric = "euclidean",
-             method = "complete",
-             graph = TRUE)
+hcpc <- HCPC(res.pca1,
+             # metric = "euclidean",
+             # method = "complete",
+             # graph = TRUE,
+             nb.clust = -1) 
 
 # OPTION 2: REplace missing value with imputePCA ---------------------------
 # Create wide df contain only compounds that has some differences between 4 fuel types, but still have missing values
@@ -1605,4 +1698,114 @@ ggplot(data = pca_input %>%
 # When include 99% of cumulative peak height, all gasoline composite samples share 248 compounds in common
 # When include 99% of cumulative peak height, all IL samples share 29 compounds in common (b4 compound grouping)
 # After grouping compounds based on RT1, RT2, Ion1 threshold, all 31 IL samples share 13 compound "groups" in common 
+
+library(DiagrammeR)
+library(htmltools)
+
+# m1 <- mermaid('
+#   gantt
+#     title Gantt With Custom Config
+#     section Objective 1
+#       check with Rich         :a1, 2015-03-09, 2d
+#       add custom config param :a2, after a1, 20d
+#       get bresler feedback    :a3, after a2,  2d
+# ',height = 200)
+# 
+# # make a copy so we can compare in a tag list later
+# m2 <- m1
+# 
+# m2$x$config = list(ganttConfig = list(
+#   # a little tricky setup in what is already a hack
+#   #  treat this like a filter function with filter as second component in array
+#   #  and the time formatter in the first
+#   #  more than likely you will want to know your scale
+#   axisFormatter = list(list(
+#     "%b %d, %Y" # date format to return; see d3 time formatting
+#     ,htmlwidgets::JS(
+#       'function(d){ return d.getDay() == 1 }' # filter for Mondays or day of week = 1
+#     )
+#   ))
+# ))
+# 
+# 
+# html_print(tagList(
+#   tags$h1("Default Behavior")
+#   ,m1
+#   ,tags$h1("Hacked Behavior")
+#   ,m2
+# ))
+
+DiagrammeR::grViz("digraph my_flowchart  {
+      graph[splines = ortho] # to get 90 degree angles and straight lines.
+      node [fontname = Helvetica, shape = box, fixedsize = false, width = 4, height = 1]
+
+      node1[label = <<FONT COLOR='blue' POINT-SIZE='30'><b>Data import </b></FONT>>];
+      node2[label = <<b><font color='blue' POINT-SIZE='30'>Filtering out column bleed and solvent     </font></b>>]
+      node3[label = <<b><font color='blue' POINT-SIZE='30'>Data Normalization (TSN as 1st layer)   </font></b>>]
+      node3a[label = <<b><font color='red' POINT-SIZE='30'>Total Sum Normalization   </font></b>>]
+      node3b[label = <<b><font color='red' POINT-SIZE='30'>Internal Standard Normalization   </font></b>>]
+      node4[label = <<b><font color='blue' POINT-SIZE='30'>Grouping identical compounds based on RT1, RT2, Ion1 threshold        </font></b>>]
+      node4a[label = <<b><font color='red' POINT-SIZE='30'>Differentiating isomers in each compound group?       </font></b>>]
+      node5[label = <<b><font color='blue' POINT-SIZE='30'>Identify shared and unique compound groups across samples        </font></b>>] # this can be a side node
+      node6[label = <<b><font color='blue' POINT-SIZE='30'>Statistical test to identify potential markers      </font></b>>]
+      node7[label = <<b><font color='blue' POINT-SIZE='30'>Test potential markers by clustering analysis      </font></b>>]
+      node8[label = <<b><font color='blue' POINT-SIZE='30'>Regression Classification   </font></b>>]
+
+      blank1[label = '', width = 0.01, height = 0.01]
+      blank1a[label = '', width = 0.01, height = 0.01]
+      blank1b[label = '', width = 0.01, height = 0.01]
+      blank1c[label = '', width = 0.01, height = 0.01]
+      m1 [label = <<b><font color='red' POINT-SIZE='30'>Pair wise comparison   </font></b>>]
+      m2 [label = <<b><font color='red' POINT-SIZE='30'>Multiple comparison   </font></b>>]
+
+      node6 -> blank1[dir = none];
+      blank1 -> blank1a[dir = none, minlen = 12];
+      {rank = same; blank1 blank1a}
+      blank1a -> blank1b[dir = none, maxlen = 1];
+      blank1a -> blank1c[dir = none, maxlen = 1];
+      {rank = same; blank1b blank1c}
+      blank1b -> m1[maxlen = 1];
+      {rank = same; blank1b m1}
+      blank1c -> m2[maxlen = 1];
+      {rank = same; blank1c m2}
+      blank1 -> node7;
+
+      m1a [label = <<b><font color='darkgreen' POINT-SIZE='30'>Kolmogorov-Smirnov test    </font></b>>]
+      m1b [label = <<b><font color='darkgreen' POINT-SIZE='30'>Mann-Whitney Rank Sum test   </font></b>>]
+      m1c [label = <<b><font color='darkgreen' POINT-SIZE='30'>Student t-Test</font></b>>]
+      blank2[label = '', width = 0.01, height = 0.01]
+      m1 -> blank2[dir = none, maxlen = 1];
+      blank2 -> m1a[maxlen = 1];
+      blank2 -> m1b[maxlen = 1];
+      blank2 -> m1c[maxlen = 1];
+      {rank = same; m1a m1b m1c}
+
+      m2a [label = <<b><font color='darkgreen' POINT-SIZE='30'>ANOVA</font></b>>]
+      m2b [label = <<b><font color='darkgreen' POINT-SIZE='30'>ANCOVA</font></b>>]
+      blank3[label = '', width = 0.01, height = 0.01]
+      m2 -> blank3[dir = none, maxlen = 1];
+      blank3 -> m2a[maxlen = 1];
+      blank3 -> m2b[maxlen = 1];
+      {rank = same; m2a m2b}
+
+      blank4[label = '', width = 0.01, height = 0.01]
+      node3 -> blank4[dir = none];
+      blank4 -> node3a[minlen = 12];
+      {rank = same; blank4 node3a}
+      node3a -> node3b[minlen = 6];
+      {rank = same; node3a node3b}
+      blank4 -> node4
+
+      blank5[label = '', width = 0.01, height = 0.01]
+      node4 -> blank5[dir = none];
+      blank5 -> node4a[minlen = 12];
+      {rank = same; blank5 node4a}
+      blank5 -> node5
+
+     # create undirected edge from source to dummy node
+      edge [dir=normal]
+      node1 -> node2 -> node3;
+      node5 -> node6;
+      node7 -> node8;
+    }", height = '100%', width = '100%')
 
